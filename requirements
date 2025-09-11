@@ -1,0 +1,10 @@
+streamlit
+paddlepaddle==3.0.0
+paddleocr==2.8.1
+opencv-python-headless
+pillow
+numpy
+protobuf
+shapely
+scikit-learn
+supabase
