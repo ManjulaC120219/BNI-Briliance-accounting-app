@@ -1,20 +1,4 @@
 import streamlit as st
-import pandas as pd
-from supabase import create_client, Client
-import hashlib
-from datetime import datetime, timedelta, date
-import time
-import io
-import logging
-from typing import Optional, Dict, Any, Tuple
-import calendar
-from Final_bni_data_extraction import extract_data_from_image
-import traceback
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 
 # Configure Streamlit page
 st.set_page_config(
@@ -23,6 +7,26 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+import pandas as pd
+import math
+from supabase import create_client, Client
+import hashlib
+from datetime import datetime, timedelta, date
+import time
+import io
+import logging
+from typing import Optional, Dict, Any, Tuple
+import calendar
+import traceback
+# At the top of python_member_app.py, change the import to:
+import BNI_personal_data1 as personal_data_module
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+from Final_bni_data_extraction import extract_data_from_image
 
 # Supabase configuration
 SUPABASE_URL = "https://dvzpeyupbyqkehksvmpc.supabase.co"
@@ -48,6 +52,8 @@ class ValidationError(AppError):
 class AuthenticationError(AppError):
     """Authentication related errors"""
     pass
+
+
 # Enhanced error tracking
 def increment_error_count():
     """Track errors for monitoring"""
@@ -55,6 +61,7 @@ def increment_error_count():
         st.session_state.error_count = 0
     st.session_state.error_count += 1
     st.session_state.last_error = datetime.now()
+
 
 def init_session_state():
     """Initialize session state variables"""
@@ -68,6 +75,7 @@ def show_error_details(error_message):
     """Display error details in a user-friendly way"""
     with st.expander("🔍 Error Details"):
         st.code(error_message)
+
 
 def upload_and_process_image(uploaded_file):
     """Upload image and process it to extract table data."""
@@ -214,6 +222,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+
 def save_data_to_supabase(dataframe: pd.DataFrame):
     """Save the edited dataframe back to Supabase."""
     success_count = 0
@@ -275,7 +284,6 @@ def save_data_to_supabase(dataframe: pd.DataFrame):
         st.error(f"Database operation failed: {str(e)}")
 
 
-
 def debug_supabase_connection():
     """Debug function to test Supabase connection"""
     try:
@@ -330,6 +338,8 @@ def save_data_simple_test(dataframe: pd.DataFrame):
         st.error(f"Test failed: {str(e)}")
         st.write(traceback.format_exc())
         return False
+
+
 # Database helper functions with enhanced error handling
 def hash_password(password: str) -> str:
     """Hash password using SHA-256 with input validation"""
@@ -415,7 +425,6 @@ def ensure_admin_exists() -> bool:
         raise DatabaseError(f"Could not create/verify admin account: {str(e)}")
 
 
-
 @handle_error
 def get_all_members() -> pd.DataFrame:
     """Fetch all members from database with error handling"""
@@ -436,7 +445,7 @@ def get_all_members() -> pd.DataFrame:
 
 
 @handle_error
-def add_member(name: str,  toa: str, payment: float, mode: str) -> bool:
+def add_member(name: str, toa: str, payment: int, mode: str) -> bool:
     """Add new member with comprehensive validation and error handling"""
     try:
         # Input validation
@@ -445,16 +454,13 @@ def add_member(name: str,  toa: str, payment: float, mode: str) -> bool:
         if payment <= 0:
             raise ValidationError("Payment amount must be greater than 0")
 
-
         # Prepare member data
         member_data = {
             'name': name.strip(),
             'toa': toa.strip() if toa else '',
             'payment': float(payment),
-            'mode':mode.strip(),
-
-
-            #'created_at': datetime.now().isoformat()
+            'mode': mode.strip(),
+            # 'created_at': datetime.now().isoformat()
         }
 
         # Check for duplicate names (optional warning)
@@ -479,7 +485,7 @@ def add_member(name: str,  toa: str, payment: float, mode: str) -> bool:
 
 
 @handle_error
-def update_member(member_id: int, name: str,  toa: str, payment: float,mode: str) -> bool:
+def update_member(member_id: int, name: str, toa: str, payment: int, mode: str) -> bool:
     """Update member with validation and error handling"""
     try:
         # Input validation
@@ -488,21 +494,20 @@ def update_member(member_id: int, name: str,  toa: str, payment: float,mode: str
         if payment <= 0:
             raise ValidationError("Payment amount must be greater than 0")
 
-
-
         # Check if member exists
         check_response = supabase.table('image_data_extraction').select('id').eq('id', member_id).execute()
         if not check_response.data:
             raise ValidationError(f"Member with ID {member_id} not found")
 
-        # Prepare update data
+        # Prepare update data - keep payment as integer for BIGINT column
         member_data = {
             'name': name.strip(),
-            'payment': float(payment),
+            'payment': payment,  # ✅ Keep as integer for BIGINT column
             'toa': toa.strip() if toa else '',
             'mode': mode.strip(),
-            'updated_at': datetime.now().isoformat()
+            'created_at': datetime.now().isoformat()  # ✅ Changed to updated_at instead of created_at
         }
+
         # Update member
         response = supabase.table('image_data_extraction').update(member_data).eq('id', member_id).execute()
 
@@ -874,7 +879,6 @@ def search_members(query: str) -> pd.DataFrame:
 
         response = supabase.table('image_data_extraction').select('*').or_(
 
-
             f'name.ilike.%{clean_query}%,toa.ilike.%{clean_query}%'
         ).order('created_at', desc=True).execute()
 
@@ -966,8 +970,8 @@ def process_supabase_data_with_created_at(raw_data, selected_thursdays):
                                 payment_by_person_week[name][week_key] = payment_amount
 
                             # Debug info
-                            #st.write(
-                                #f"✅ Matched: {name} - Rs.{payment_amount} on {record_date} → Thursday {selected_thursdays[week_key].strftime('%Y-%m-%d')}")
+                            # st.write(
+                            # f"✅ Matched: {name} - Rs.{payment_amount} on {record_date} → Thursday {selected_thursdays[week_key].strftime('%Y-%m-%d')}")
                         else:
                             st.write(
                                 f"⚠️ Skipped: {name} - Rs.{payment_amount} on {record_date} (too far from selected Thursdays)")
@@ -1011,7 +1015,7 @@ def display_payment_summary(selected_thursdays, weekly_amount):
         expected_total = total_weeks * weekly_amount
 
         st.write(f"**Payment Summary for {total_weeks} selected Thursdays:**")
-        #st.write(f"**Data Source:** Supabase table 'image_data_extraction'")
+        # st.write(f"**Data Source:** Supabase table 'image_data_extraction'")
 
         # Create summary table
         summary_data = []
@@ -1019,7 +1023,6 @@ def display_payment_summary(selected_thursdays, weekly_amount):
             payments = individual["payments"]
             total_paid = sum(payments)
             pending = expected_total - total_paid
-            payment_percentage = (total_paid / expected_total * 100) if expected_total > 0 else 0
 
             if pending == 0:
                 status = "✅ Complete"
@@ -1033,7 +1036,7 @@ def display_payment_summary(selected_thursdays, weekly_amount):
                 "Expected": f"Rs. {expected_total:,.2f}",
                 "Paid": f"Rs. {total_paid:,.2f}",
                 "Pending": f"Rs. {pending:,.2f}",
-                #"Payment %": f"{payment_percentage:.1f}%",
+                # "Payment %": f"{payment_percentage:.1f}%",
                 "Status": status
             })
 
@@ -1071,8 +1074,8 @@ def display_payment_summary(selected_thursdays, weekly_amount):
 
         # Collection rate
         collection_rate = (total_collected / total_expected) * 100 if total_expected > 0 else 0
-        st.progress(collection_rate / 100)
-        st.write(f"**Collection Rate:** {collection_rate:.1f}%")
+        # st.progress(collection_rate / 100)
+        # st.write(f"**Collection Rate:** {collection_rate:.1f}%")
 
         # Export functionality
         if st.button("📥 Export Summary to CSV"):
@@ -1089,26 +1092,307 @@ def display_payment_summary(selected_thursdays, weekly_amount):
 
 
 # Solution 1: Main app structure with sidebar
-#def main():
-    #"""Main application entry point"""
-    # Configure page
-    #st.set_page_config(
-        #page_title="BNI Brilliance",
-        #page_icon="🏢",
-        #layout="wide",
-        #initial_sidebar_state="expanded"  # Force sidebar to be expanded
-    #)
+# def main():
+# """Main application entry point"""
+# Configure page
+# st.set_page_config(
+# page_title="BNI Brilliance",
+# page_icon="🏢",
+# layout="wide",
+# initial_sidebar_state="expanded"  # Force sidebar to be expanded
+# )
 
-    # Always show sidebar first
-    #show_sidebar()
+# Always show sidebar first
+# show_sidebar()
 
-    # Then show dashboard
-    #show_dashboard()
-
-
+# Then show dashboard
+# show_dashboard()
 # Solution 2: Force sidebar visibility in show_sidebar function
+
+@handle_error
+def get_available_dates_from_db(year: int, month: int) -> list:
+    """Get all unique dates from database for given year and month"""
+    try:
+        # Create date range for the selected month
+        start_date = f"{year}-{month:02d}-01"
+        if month == 12:
+            end_date = f"{year + 1}-01-01"
+        else:
+            end_date = f"{year}-{month + 1:02d}-01"
+
+        # Query database for records in the selected month
+        response = supabase.table('image_data_extraction') \
+            .select('created_at') \
+            .gte('created_at', start_date) \
+            .lt('created_at', end_date) \
+            .execute()
+
+        if response.data:
+            # Extract unique dates
+            dates_set = set()
+            for record in response.data:
+                try:
+                    # Parse the created_at timestamp
+                    created_at_str = record.get('created_at', '')
+                    if created_at_str:
+                        # Handle different date formats
+                        date_obj = None
+                        formats_to_try = [
+                            '%Y-%m-%d',
+                            '%Y-%m-%dT%H:%M:%S',
+                            '%Y-%m-%dT%H:%M:%SZ',
+                            '%Y-%m-%dT%H:%M:%S.%fZ',
+                            '%Y-%m-%d %H:%M:%S',
+                        ]
+
+                        for date_format in formats_to_try:
+                            try:
+                                date_obj = datetime.strptime(created_at_str, date_format).date()
+                                break
+                            except ValueError:
+                                continue
+
+                        # Try isoformat if other formats failed
+                        if date_obj is None:
+                            try:
+                                date_obj = datetime.fromisoformat(created_at_str.replace('Z', '+00:00')).date()
+                            except ValueError:
+                                continue
+
+                        if date_obj:
+                            dates_set.add(date_obj)
+
+                except Exception as e:
+                    logger.warning(f"Error parsing date {record.get('created_at', '')}: {e}")
+                    continue
+
+            # Convert to sorted list
+            available_dates = sorted(list(dates_set))
+            return available_dates
+        else:
+            return []
+
+    except Exception as e:
+        logger.error(f"Error fetching available dates: {e}")
+        raise DatabaseError(f"Could not fetch available dates: {str(e)}")
+
+
+@handle_error
+def get_members_by_date(selected_date) -> pd.DataFrame:
+    """Get all members created on a specific date"""
+    try:
+        # Convert date to string format for database query
+        date_str = selected_date.strftime('%Y-%m-%d')
+        next_date_str = (selected_date + timedelta(days=1)).strftime('%Y-%m-%d')
+
+        # Query database for records on the selected date
+        response = supabase.table('image_data_extraction') \
+            .select('*') \
+            .gte('created_at', date_str) \
+            .lt('created_at', next_date_str) \
+            .order('created_at', desc=True) \
+            .execute()
+
+        if response.data:
+            df = pd.DataFrame(response.data)
+            logger.info(f"Found {len(df)} records for date {date_str}")
+            return df
+        else:
+            logger.info(f"No records found for date {date_str}")
+            return pd.DataFrame()
+
+    except Exception as e:
+        logger.error(f"Error fetching members by date: {e}")
+        raise DatabaseError(f"Could not fetch members for date: {str(e)}")
+
+
+def show_view_records():
+    """Show view records interface with date filtering"""
+    st.header("👀 View Records by Date")
+
+    # Back button
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if st.button("⬅️ Back to Dashboard", key="back_from_view_records"):
+            st.session_state.show_view_records = False
+            st.rerun()
+
+    st.write("Select a month and year to view available record dates:")
+
+    # Month and Year selection
+    col_month, col_year = st.columns(2)
+
+    with col_month:
+        selected_month = st.selectbox(
+            "Month",
+            range(1, 13),
+            format_func=lambda x: calendar.month_name[x],
+            index=datetime.now().month - 1,
+            key="view_records_month"
+        )
+
+    with col_year:
+        current_year = datetime.now().year
+        selected_year = st.selectbox(
+            "Year",
+            range(current_year - 5, current_year + 2),
+            index=5,  # Default to current year
+            key="view_records_year"
+        )
+
+    # Load available dates button
+    if st.button("🔍 Load Available Dates", type="primary"):
+        with st.spinner(f"Loading dates for {calendar.month_name[selected_month]} {selected_year}..."):
+            try:
+                available_dates = get_available_dates_from_db(selected_year, selected_month)
+                st.session_state.available_dates = available_dates
+                st.session_state.selected_month_year = f"{calendar.month_name[selected_month]} {selected_year}"
+
+                if available_dates:
+                    st.success(f"Found records on {len(available_dates)} different dates")
+                else:
+                    st.info(f"No records found for {calendar.month_name[selected_month]} {selected_year}")
+
+            except Exception as e:
+                st.error(f"Failed to load dates: {str(e)}")
+
+    # Show date selection dropdown if dates are available
+    if 'available_dates' in st.session_state and st.session_state.available_dates:
+        st.write("---")
+        st.write(f"**Available dates in {st.session_state.get('selected_month_year', 'Selected Month')}:**")
+
+        # Date selection dropdown
+        selected_date = st.selectbox(
+            "Select Date",
+            st.session_state.available_dates,
+            format_func=lambda x: x.strftime('%Y-%m-%d (%A)'),
+            key="selected_view_date"
+        )
+
+        # Show records for selected date
+        if st.button("📊 View Records", type="primary"):
+            with st.spinner(f"Loading records for {selected_date.strftime('%Y-%m-%d')}..."):
+                try:
+                    st.session_state.filtered_date_members = get_members_by_date(selected_date)
+                    st.session_state.current_filter_date = selected_date
+                    st.success(f"Loaded records for {selected_date.strftime('%Y-%m-%d')}")
+                except Exception as e:
+                    st.error(f"Failed to load records: {str(e)}")
+
+    # Display filtered members using show_members_list() logic
+    if 'filtered_date_members' in st.session_state and not st.session_state.filtered_date_members.empty:
+        st.write("---")
+        filter_date = st.session_state.get('current_filter_date')
+        if filter_date:
+            st.subheader(f"📅 Records for {filter_date.strftime('%Y-%m-%d (%A)')}")
+
+        # Use the existing show_members_list logic with filtered data
+        show_filtered_members_list(st.session_state.filtered_date_members)
+
+
+def show_filtered_members_list(df):
+    """Display members list for filtered data (similar to show_members_list but with filtered data)"""
+    try:
+        if df is None or df.empty:
+            st.info("No records found for the selected date.")
+            return
+
+        # Show statistics
+        stats = get_stats(df)
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Members", stats['total_members'])
+        with col2:
+            st.metric("Total Payment", f"₹{stats['total_payment']:,.2f}")
+        with col3:
+            if stats['total_members'] > 0:
+                avg_payment = stats['total_payment'] / stats['total_members']
+                st.metric("Average Payment", f"₹{avg_payment:,.2f}")
+
+        # Show table headers
+        st.markdown("---")
+        col1, col2, col3, col4, col5, col6 = st.columns([2, 1.5, 1, 1, 1.5, 1])
+
+        with col1:
+            st.markdown("**Name**")
+        with col2:
+            st.markdown("**TOA**")
+        with col3:
+            st.markdown("**Payment**")
+        with col4:
+            st.markdown("**Mode**")
+        with col5:
+            st.markdown("**Created**")
+        with col6:
+            st.markdown("**Actions**")
+
+        st.markdown("---")
+
+        # Show table with error boundaries for each row
+        for idx, row in df.iterrows():
+            try:
+                with st.container():
+                    col1, col2, col3, col4, col5, col6 = st.columns([2, 1.5, 1, 1, 1.5, 1])
+
+                    with col1:
+                        st.write(f"**{row.get('name', 'Unknown')}**")
+                        st.caption(f"ID: {row.get('id', 'Unknown')}")
+
+                    with col2:
+                        st.write(row.get('toa', 'Not specified'))
+
+                    with col3:
+                        payment_val = row.get('payment', 0)
+                        try:
+                            st.write(f"₹{float(payment_val):,.2f}")
+                        except (ValueError, TypeError):
+                            st.write("₹0.00")
+
+                    with col4:
+                        st.write(row.get('mode', 'Unknown'))
+
+                    with col5:
+                        created_at = row.get('created_at', '')
+                        if created_at:
+                            try:
+                                # Parse and format the date
+                                parsed_date = pd.to_datetime(created_at)
+                                st.write(parsed_date.strftime('%Y-%m-%d'))
+                                st.caption(parsed_date.strftime('%H:%M:%S'))
+                            except:
+                                st.write(str(created_at)[:10])  # Show first 10 characters
+                        else:
+                            st.write("Unknown")
+
+                    with col6:
+                        col_edit, col_delete = st.columns(2)
+
+                        with col_edit:
+                            if st.button("✏️", key=f"edit_filtered_{row['id']}", help="Edit member"):
+                                st.session_state.edit_member = row.to_dict()
+                                st.session_state.show_view_records = False  # Hide view records
+                                st.rerun()
+
+                        with col_delete:
+                            if st.button("🗑️", key=f"delete_filtered_{row['id']}", help="Delete member"):
+                                st.session_state.delete_confirmation = row.to_dict()
+                                st.rerun()
+
+                    st.divider()
+
+            except Exception as e:
+                st.error(f"Error displaying member row: {str(e)}")
+                logger.error(f"Row display error for member {row.get('id', 'unknown')}: {e}")
+                continue
+
+    except Exception as e:
+        st.error("Error displaying filtered members")
+        show_error_details(str(e))
+
+
 def show_sidebar():
-    """Show sidebar with file upload and other options"""
+    """Show sidebar with file upload and other options - UPDATED VERSION"""
     try:
         # Force sidebar to be visible
         st.sidebar.markdown("")  # This ensures sidebar is created
@@ -1191,20 +1475,55 @@ def show_sidebar():
 
             st.divider()
 
+            # Action buttons with error handling
+            if st.button("➕ Add New Member", use_container_width=True, key='sidebar_add_member'):
+                st.session_state.show_add_form = True
+                st.session_state.edit_member = None
+                st.session_state.show_view_records = False
+                st.session_state.show_calendar = False
+                st.session_state.show_personal_data = False
+                st.session_state.show_meeting_data = False  # Clear other views
+                st.rerun()
+
+            # View Records Button
+            if st.button("👀 View Records", use_container_width=True, key="sidebar_view_records"):
+                st.session_state.show_view_records = True
+                st.session_state.show_add_form = False
+                st.session_state.show_calendar = False
+                st.session_state.show_personal_data = False
+                st.session_state.show_meeting_data = False  # Clear other views
+                st.session_state.edit_member = None
+                st.rerun()
+
+            # NEW: Meeting Data Button
+            if st.button("📊 Meeting Data", use_container_width=True, key="sidebar_meeting_data"):
+                st.session_state.show_meeting_data = True
+                st.session_state.show_add_form = False
+                st.session_state.show_calendar = False
+                st.session_state.show_view_records = False
+                st.session_state.show_personal_data = False
+                st.session_state.edit_member = None
+                st.rerun()
+
+            if st.button("📄 Personal Data", use_container_width=True, key="sidebar_personal_data"):
+                st.session_state.show_personal_data = True
+                st.session_state.show_add_form = False
+                st.session_state.show_calendar = False
+                st.session_state.show_view_records = False
+                st.session_state.show_meeting_data = False  # Clear other views
+                st.rerun()
+
             # Navigation buttons
-            if st.button("📅 Calendar", use_container_width=True):
+            if st.button("📅 Calendar", use_container_width=True, key="sidebar_calendar"):
                 st.session_state.show_calendar = True
                 st.session_state.show_add_form = False
                 st.session_state.edit_member = None
+                st.session_state.show_view_records = False
+                st.session_state.show_personal_data = False
+                st.session_state.show_meeting_data = False  # Clear other views
                 st.rerun()
 
-            # Action buttons with error handling
-            if st.button("➕ Add New Member", use_container_width=True):
-                st.session_state.show_add_form = True
-                st.session_state.edit_member = None
-                st.rerun()
-
-            if st.button("📊 Export Data", use_container_width=True):
+            if st.button("📊 Export Data", use_container_width=True, key="sidebar_export"):
                 try:
                     df = get_all_members()
                     if df is not None and not df.empty:
@@ -1221,7 +1540,7 @@ def show_sidebar():
                 except Exception as e:
                     st.error(f"Export failed: {str(e)}")
 
-            if st.button("🚪 Logout", use_container_width=True):
+            if st.button("🚪 Logout", use_container_width=True, key="sidebar_logout"):
                 for key in list(st.session_state.keys()):
                     del st.session_state[key]
                 st.rerun()
@@ -1231,7 +1550,540 @@ def show_sidebar():
         logger.error(f"Sidebar error: {e}")
 
 
-# Solution 4: Quick Debug - Add this to your current main execution
+def show_meeting_data():
+    """Show meeting data interface with month/year selection and payment tracking"""
+    st.header("📊 Meeting Data Analysis")
+
+    # Back button
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if st.button("⬅️ Back to Dashboard", key="back_from_meeting_data"):
+            st.session_state.show_meeting_data = False
+            st.rerun()
+
+    # Initialize session state for meeting data
+    if 'meeting_data_selected_month' not in st.session_state:
+        st.session_state.meeting_data_selected_month = datetime.now().month
+    if 'meeting_data_selected_year' not in st.session_state:
+        st.session_state.meeting_data_selected_year = datetime.now().year
+    if 'weekly_payment_amount' not in st.session_state:
+        st.session_state.weekly_payment_amount = 1500.0
+
+    st.write("### 📅 Select Month and Year")
+
+    # Month and Year selection
+    col_month, col_year, col_amount = st.columns([2, 2, 2])
+
+    with col_month:
+        selected_month = st.selectbox(
+            "Month",
+            range(1, 13),
+            format_func=lambda x: calendar.month_name[x],
+            index=st.session_state.meeting_data_selected_month - 1,
+            key="meeting_data_month"
+        )
+
+    with col_year:
+        current_year = datetime.now().year
+        selected_year = st.selectbox(
+            "Year",
+            range(current_year - 5, current_year + 2),
+            index=current_year - (current_year - 5),
+            key="meeting_data_year"
+        )
+
+    with col_amount:
+        weekly_payment = st.number_input(
+            "Weekly Payment Amount (Rs.)",
+            min_value=0.0,
+            value=st.session_state.weekly_payment_amount,
+            step=50.0,
+            format="%.2f",
+            help="Amount each person should pay per week"
+        )
+        st.session_state.weekly_payment_amount = weekly_payment
+
+    # Store selections
+    st.session_state.meeting_data_selected_month = selected_month
+    st.session_state.meeting_data_selected_year = selected_year
+
+    # Load available dates button
+    if st.button("🔍 Load Meeting Dates", type="primary"):
+        with st.spinner(f"Loading dates for {calendar.month_name[selected_month]} {selected_year}..."):
+            try:
+                available_dates = get_available_dates_from_db(selected_year, selected_month)
+                st.session_state.meeting_available_dates = available_dates
+                st.session_state.meeting_selected_month_year = f"{calendar.month_name[selected_month]} {selected_year}"
+
+                if available_dates:
+                    st.success(f"Found meeting records on {len(available_dates)} different dates")
+
+                    # Calculate number of Thursdays in the month for reference
+                    thursdays_in_month = get_thursdays_in_month(selected_year, selected_month)
+                    st.info(
+                        f"ℹ️ There are {len(thursdays_in_month)} Thursdays in {calendar.month_name[selected_month]} {selected_year}")
+                else:
+                    st.info(f"No meeting records found for {calendar.month_name[selected_month]} {selected_year}")
+
+            except Exception as e:
+                st.error(f"Failed to load dates: {str(e)}")
+
+    # Show date selection if dates are available
+    if 'meeting_available_dates' in st.session_state and st.session_state.meeting_available_dates:
+        st.write("---")
+        st.write(
+            f"**Available meeting dates in {st.session_state.get('meeting_selected_month_year', 'Selected Month')}:**")
+
+        # Date selection dropdown
+        selected_date = st.selectbox(
+            "Select Meeting Date",
+            st.session_state.meeting_available_dates,
+            format_func=lambda x: x.strftime('%Y-%m-%d (%A)'),
+            key="selected_meeting_date"
+        )
+
+        # Show records for selected date
+        if st.button("📊 Load Meeting Data", type="primary"):
+            with st.spinner(f"Loading meeting data for {selected_date.strftime('%Y-%m-%d')}..."):
+                try:
+                    # Load data for selected date
+                    date_records = get_members_by_date(selected_date)
+
+                    # Load all data for the month to calculate totals
+                    month_records = get_members_by_month(selected_year, selected_month)
+
+                    st.session_state.meeting_date_records = date_records
+                    st.session_state.meeting_month_records = month_records
+                    st.session_state.current_meeting_date = selected_date
+
+                    st.success(f"Loaded meeting data for {selected_date.strftime('%Y-%m-%d')}")
+                except Exception as e:
+                    st.error(f"Failed to load meeting data: {str(e)}")
+
+    # Display meeting data if loaded
+    if ('meeting_date_records' in st.session_state and
+            'meeting_month_records' in st.session_state and
+            not st.session_state.meeting_date_records.empty):
+        show_meeting_data_analysis()
+
+
+def show_meeting_data_analysis():
+    """Display meeting data analysis with two tables - FIXED VERSION"""
+    try:
+        date_records = st.session_state.meeting_date_records
+        month_records = st.session_state.meeting_month_records
+        selected_date = st.session_state.current_meeting_date
+        weekly_payment = st.session_state.weekly_payment_amount
+        selected_month = st.session_state.meeting_data_selected_month
+        selected_year = st.session_state.meeting_data_selected_year
+
+        st.write("---")
+        st.subheader(f"📊 Meeting Data for {selected_date.strftime('%Y-%m-%d (%A)')}")
+
+        # Enhanced payment conversion function
+        def safe_payment_convert(payment_value):
+            """Safely convert payment value to float with extensive validation"""
+            if payment_value is None:
+                return 0.0
+
+            # Handle pandas NaN
+            if pd.isna(payment_value):
+                return 0.0
+
+            # Convert to string first to handle various input types
+            payment_str = str(payment_value).strip()
+
+            # Handle empty strings
+            if not payment_str or payment_str.lower() in ['nan', 'none', 'null', '']:
+                return 0.0
+
+            # Remove common currency symbols and commas
+            payment_str = payment_str.replace('Rs.', '').replace('₹', '').replace(',', '').strip()
+
+            # Try to convert to float
+            try:
+                result = float(payment_str)
+                # Check if result is NaN
+                if math.isnan(result):
+                    return 0.0
+                return result
+            except (ValueError, TypeError):
+                # If conversion fails, return 0.0
+                st.warning(f"⚠️ Could not convert payment value '{payment_value}' to number, using 0.0")
+                return 0.0
+
+        # Table 1: Records for selected date
+        st.write("#### 📋 Attendance Records for Selected Date")
+        if not date_records.empty:
+            # Create display dataframe for the specific date
+            date_display_data = []
+            total_collected_date = 0.0
+
+            # st.write("Debug: Processing date records...")
+            for idx, row in date_records.iterrows():
+                name = row.get('name', 'Unknown')
+                toa = row.get('toa', 'Not specified')
+                payment_raw = row.get('payment', 0)
+
+                # Debug information
+                # st.write(f"Debug - Row {idx}: name={name}, payment_raw={payment_raw} (type: {type(payment_raw)})")
+
+                # Use enhanced conversion function
+                payment_amount = safe_payment_convert(payment_raw)
+                total_collected_date += payment_amount
+
+                # st.write(f"Debug - Converted payment: {payment_amount}")
+
+                date_display_data.append({
+                    "Name": name,
+                    "Time of Arrival (TOA)": toa,
+                    "Payment": f"Rs. {payment_amount:,.2f}"
+                })
+
+            # Display table
+            date_df = pd.DataFrame(date_display_data)
+            st.dataframe(date_df, use_container_width=True, hide_index=True)
+
+            # Summary for the date
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Members Present", len(date_records))
+            with col2:
+                st.metric("Total Collected", f"Rs. {total_collected_date:,.2f}")
+                # st.write(f"Debug: total_collected_date = {total_collected_date}")
+
+        # Table 2: Monthly summary with pending amounts
+        st.write("#### 💰 Monthly Payment Summary")
+
+        if not month_records.empty:
+            # Calculate Thursdays in the selected month
+            thursdays_in_month = get_thursdays_in_month(selected_year, selected_month)
+            total_weeks = len(thursdays_in_month)
+            expected_monthly_payment = total_weeks * weekly_payment
+
+            st.info(f"📅 {calendar.month_name[selected_month]} {selected_year} has {total_weeks} Thursdays. "
+                    f"Expected payment per person: Rs. {expected_monthly_payment:,.2f}")
+
+            # Group by name and calculate totals
+            monthly_summary = {}
+            # st.write("Debug: Processing monthly records...")
+
+            for idx, row in month_records.iterrows():
+                name = row.get('name', 'Unknown')
+                payment_raw = row.get('payment', 0)
+
+                # Debug information
+                # if idx < 5:  # Only show first 5 for debugging
+                # st.write(f"Debug - Monthly Row {idx}: name={name}, payment_raw={payment_raw} (type: {type(payment_raw)})")
+
+                # Use enhanced conversion function
+                payment_amount = safe_payment_convert(payment_raw)
+
+                # if idx < 5:  # Only show first 5 for debugging
+                # st.write(f"Debug - Monthly converted payment: {payment_amount}")
+
+                if name in monthly_summary:
+                    monthly_summary[name] += payment_amount
+                else:
+                    monthly_summary[name] = payment_amount
+
+            # Create monthly summary table
+            monthly_display_data = []
+            total_collected_month = 0.0
+            total_pending_month = 0.0
+
+            # st.write("Debug: Creating monthly summary...")
+            for name, total_paid in monthly_summary.items():
+                # st.write(f"Debug - {name}: total_paid={total_paid}")
+
+                # Ensure total_paid is not NaN
+                if pd.isna(total_paid) or math.isnan(total_paid):
+                    total_paid = 0.0
+                    st.warning(f"⚠️ Found NaN value for {name}, setting to 0.0")
+
+                pending_amount = expected_monthly_payment - total_paid
+                total_collected_month += total_paid
+                total_pending_month += max(0, pending_amount)
+
+                if pending_amount <= 0:
+                    status = "✅ Complete"
+                    pending_display = "Rs. 0.00"
+                else:
+                    status = f"⚠️ Pending"
+                    pending_display = f"Rs. {pending_amount:,.2f}"
+
+                monthly_display_data.append({
+                    "Name": name,
+                    "Total Payment": f"Rs. {total_paid:,.2f}",
+                    "Pending Amount": pending_display,
+                    "Status": status
+                })
+
+            # st.write(f"Debug: total_collected_month = {total_collected_month}")
+
+            # Display monthly summary table
+            monthly_df = pd.DataFrame(monthly_display_data)
+            st.dataframe(monthly_df, use_container_width=True, hide_index=True)
+
+            # Monthly statistics
+            st.write("#### 📈 Monthly Statistics")
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                st.metric("Total Members", len(monthly_summary))
+            with col2:
+                # Ensure total_collected_month is not NaN
+                if pd.isna(total_collected_month) or math.isnan(total_collected_month):
+                    total_collected_month = 0.0
+                st.metric("Total Collected", f"Rs. {total_collected_month:,.2f}")
+            with col3:
+                if pd.isna(total_pending_month) or math.isnan(total_pending_month):
+                    total_pending_month = 0.0
+                st.metric("Total Pending", f"Rs. {total_pending_month:,.2f}")
+            with col4:
+                expected_total = len(monthly_summary) * expected_monthly_payment
+
+            # Export functionality
+            col_export1, col_export2 = st.columns(2)
+
+            with col_export1:
+                if st.button("📥 Export Date Records"):
+                    csv_data = date_df.to_csv(index=False)
+                    st.download_button(
+                        label="Download Date Records CSV",
+                        data=csv_data,
+                        file_name=f"meeting_data_{selected_date.strftime('%Y%m%d')}.csv",
+                        mime="text/csv"
+                    )
+
+            with col_export2:
+                if st.button("📥 Export Monthly Summary"):
+                    csv_data = monthly_df.to_csv(index=False)
+                    st.download_button(
+                        label="Download Monthly Summary CSV",
+                        data=csv_data,
+                        file_name=f"monthly_summary_{selected_year}{selected_month:02d}.csv",
+                        mime="text/csv"
+                    )
+
+    except Exception as e:
+        st.error(f"Error displaying meeting data analysis: {str(e)}")
+        # st.write("Debug info:")
+        st.write(f"Date records shape: {st.session_state.get('meeting_date_records', pd.DataFrame()).shape}")
+        st.write(f"Month records shape: {st.session_state.get('meeting_month_records', pd.DataFrame()).shape}")
+
+        # Additional debug information
+        if 'meeting_date_records' in st.session_state:
+            st.write("Date records columns:", st.session_state.meeting_date_records.columns.tolist())
+            st.write("Sample date records:")
+            st.write(st.session_state.meeting_date_records.head())
+
+        if 'meeting_month_records' in st.session_state:
+            st.write("Month records columns:", st.session_state.meeting_month_records.columns.tolist())
+            st.write("Sample month records:")
+            st.write(st.session_state.meeting_month_records.head())
+
+
+def show_meeting_data_analysis_clean():
+    """Display meeting data analysis with two tables - CLEAN VERSION (no debug output)"""
+    try:
+        date_records = st.session_state.meeting_date_records
+        month_records = st.session_state.meeting_month_records
+        selected_date = st.session_state.current_meeting_date
+        weekly_payment = st.session_state.weekly_payment_amount
+        selected_month = st.session_state.meeting_data_selected_month
+        selected_year = st.session_state.meeting_data_selected_year
+
+        st.write("---")
+        st.subheader(f"📊 Meeting Data for {selected_date.strftime('%Y-%m-%d (%A)')}")
+
+        # Enhanced payment conversion function
+        def safe_payment_convert(payment_value):
+            """Safely convert payment value to float with extensive validation"""
+            if payment_value is None:
+                return 0.0
+
+            if pd.isna(payment_value):
+                return 0.0
+
+            payment_str = str(payment_value).strip()
+
+            if not payment_str or payment_str.lower() in ['nan', 'none', 'null', '']:
+                return 0.0
+
+            payment_str = payment_str.replace('Rs.', '').replace('₹', '').replace(',', '').strip()
+
+            try:
+                result = float(payment_str)
+                if math.isnan(result):
+                    return 0.0
+                return result
+            except (ValueError, TypeError):
+                return 0.0
+
+        # Table 1: Records for selected date
+        st.write("#### 📋 Attendance Records for Selected Date")
+        if not date_records.empty:
+            date_display_data = []
+            total_collected_date = 0.0
+
+            for _, row in date_records.iterrows():
+                name = row.get('name', 'Unknown')
+                toa = row.get('toa', 'Not specified')
+                payment_amount = safe_payment_convert(row.get('payment', 0))
+                total_collected_date += payment_amount
+
+                date_display_data.append({
+                    "Name": name,
+                    "Time of Arrival (TOA)": toa,
+                    "Payment": f"Rs. {payment_amount:,.2f}"
+                })
+
+            date_df = pd.DataFrame(date_display_data)
+            st.dataframe(date_df, use_container_width=True, hide_index=True)
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Members Present", len(date_records))
+            with col2:
+                st.metric("Total Collected", f"Rs. {total_collected_date:,.2f}")
+
+        # Table 2: Monthly summary with pending amounts
+        st.write("#### 💰 Monthly Payment Summary")
+
+        if not month_records.empty:
+            thursdays_in_month = get_thursdays_in_month(selected_year, selected_month)
+            total_weeks = len(thursdays_in_month)
+            expected_monthly_payment = total_weeks * weekly_payment
+
+            st.info(f"📅 {calendar.month_name[selected_month]} {selected_year} has {total_weeks} Thursdays. "
+                    f"Expected payment per person: Rs. {expected_monthly_payment:,.2f}")
+
+            monthly_summary = {}
+
+            for _, row in month_records.iterrows():
+                name = row.get('name', 'Unknown')
+                payment_amount = safe_payment_convert(row.get('payment', 0))
+
+                if name in monthly_summary:
+                    monthly_summary[name] += payment_amount
+                else:
+                    monthly_summary[name] = payment_amount
+
+            monthly_display_data = []
+            total_collected_month = 0.0
+            total_pending_month = 0.0
+
+            for name, total_paid in monthly_summary.items():
+                if pd.isna(total_paid) or math.isnan(total_paid):
+                    total_paid = 0.0
+
+                pending_amount = expected_monthly_payment - total_paid
+                total_collected_month += total_paid
+                total_pending_month += max(0, pending_amount)
+
+                if pending_amount <= 0:
+                    status = "✅ Complete"
+                    pending_display = "Rs. 0.00"
+                else:
+                    status = f"⚠️ Pending"
+                    pending_display = f"Rs. {pending_amount:,.2f}"
+
+                monthly_display_data.append({
+                    "Name": name,
+                    "Total Payment": f"Rs. {total_paid:,.2f}",
+                    "Pending Amount": pending_display,
+                    "Status": status
+                })
+
+            monthly_df = pd.DataFrame(monthly_display_data)
+            st.dataframe(monthly_df, use_container_width=True, hide_index=True)
+
+            # Monthly statistics
+            st.write("#### 📈 Monthly Statistics")
+            col1, col2, col3, col4 = st.columns(4)
+
+            if pd.isna(total_collected_month) or math.isnan(total_collected_month):
+                total_collected_month = 0.0
+            if pd.isna(total_pending_month) or math.isnan(total_pending_month):
+                total_pending_month = 0.0
+
+            with col1:
+                st.metric("Total Members", len(monthly_summary))
+            with col2:
+                st.metric("Total Collected", f"Rs. {total_collected_month:,.2f}")
+            with col3:
+                st.metric("Total Pending", f"Rs. {total_pending_month:,.2f}")
+            with col4:
+                expected_total = len(monthly_summary) * expected_monthly_payment
+                collection_rate = (total_collected_month / expected_total * 100) if expected_total > 0 else 0
+                st.metric("Collection Rate", f"{collection_rate:.1f}%")
+
+            if expected_total > 0:
+                st.progress(collection_rate / 100)
+
+            # Export functionality
+            col_export1, col_export2 = st.columns(2)
+
+            with col_export1:
+                if st.button("📥 Export Date Records"):
+                    csv_data = date_df.to_csv(index=False)
+                    st.download_button(
+                        label="Download Date Records CSV",
+                        data=csv_data,
+                        file_name=f"meeting_data_{selected_date.strftime('%Y%m%d')}.csv",
+                        mime="text/csv"
+                    )
+
+            with col_export2:
+                if st.button("📥 Export Monthly Summary"):
+                    csv_data = monthly_df.to_csv(index=False)
+                    st.download_button(
+                        label="Download Monthly Summary CSV",
+                        data=csv_data,
+                        file_name=f"monthly_summary_{selected_year}{selected_month:02d}.csv",
+                        mime="text/csv"
+                    )
+
+    except Exception as e:
+        st.error(f"Error displaying meeting data analysis: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
+
+
+@handle_error
+def get_members_by_month(year: int, month: int) -> pd.DataFrame:
+    """Get all members for a specific month"""
+    try:
+        # Create date range for the selected month
+        start_date = f"{year}-{month:02d}-01"
+        if month == 12:
+            end_date = f"{year + 1}-01-01"
+        else:
+            end_date = f"{year}-{month + 1:02d}-01"
+
+        # Query database for records in the selected month
+        response = supabase.table('image_data_extraction') \
+            .select('*') \
+            .gte('created_at', start_date) \
+            .lt('created_at', end_date) \
+            .order('created_at', desc=True) \
+            .execute()
+
+        if response.data:
+            df = pd.DataFrame(response.data)
+            logger.info(f"Found {len(df)} records for {calendar.month_name[month]} {year}")
+            return df
+        else:
+            logger.info(f"No records found for {calendar.month_name[month]} {year}")
+            return pd.DataFrame()
+
+    except Exception as e:
+        logger.error(f"Error fetching members by month: {e}")
+        raise DatabaseError(f"Could not fetch members for month: {str(e)}")
+
+
+# Solution 4: Quick Debug - Add this to your current main exeution
 def debug_sidebar():
     """Quick debug function to force sidebar visibility"""
     with st.sidebar:
@@ -1250,6 +2102,7 @@ def verify_password_hash():
     print(f"Actual:   {actual_hash}")
     print(f"Match:    {expected_hash == actual_hash}")
     return expected_hash == actual_hash
+
 
 # Add this function temporarily for debugging
 
@@ -1315,18 +2168,23 @@ def show_login():
                     st.rerun()
 
 
-
 # Enhanced dashboard with error monitoring
 def show_dashboard():
-    """Main dashboard function - only shows dashboard content, no sidebar"""
+    """Main dashboard function - UPDATED VERSION"""
     st.title("🏢 BNI Brilliance Member Management System")
 
-    # Initialize session state variables
+    # Initialize session state variables (add the new one)
     if "show_calendar" not in st.session_state:
         st.session_state.show_calendar = False
 
     if "show_add_form" not in st.session_state:
         st.session_state.show_add_form = False
+
+    if "show_view_records" not in st.session_state:
+        st.session_state.show_view_records = False
+
+    if "show_meeting_data" not in st.session_state:  # NEW
+        st.session_state.show_meeting_data = False
 
     if "edit_member" not in st.session_state:
         st.session_state.edit_member = None
@@ -1378,10 +2236,10 @@ def show_dashboard():
         st.dataframe(edited_data)
 
         # Save the edited data back to Supabase
-        if st.button("Save to Database"):
+        if st.button("Save to Database", key="save_extracted_data"):
             save_data_to_supabase(edited_data)
 
-        # Handle delete confirmation with error handling
+    # Handle delete confirmation with error handling
     if st.session_state.delete_confirmation:
         member_to_delete = st.session_state.delete_confirmation
 
@@ -1396,7 +2254,7 @@ def show_dashboard():
         col1, col2, col3 = st.columns([1, 1, 2])
 
         with col1:
-            if st.button("❌ Yes, Delete", type="primary"):
+            if st.button("❌ Yes, Delete", type="primary", key="confirm_delete"):
                 with st.spinner("Deleting member..."):
                     result = delete_member(member_to_delete['id'])
                     if result:
@@ -1406,20 +2264,24 @@ def show_dashboard():
                         st.rerun()
 
         with col2:
-            if st.button("↩️ Cancel"):
+            if st.button("↩️ Cancel", key="cancel_delete"):
                 st.session_state.delete_confirmation = None
                 st.rerun()
 
-        # Main content area based on current state
+    # Main content area based on current state
     try:
         if st.session_state.get("show_calendar"):
             show_calendar_widget()
         elif st.session_state.get("show_add_form"):
             show_add_member_form()
+        elif st.session_state.get("show_view_records"):
+            show_view_records()
+        elif st.session_state.get("show_meeting_data"):  # NEW
+            show_meeting_data()
         elif st.session_state.get("edit_member"):
             show_edit_member_form()
-        else:
-            show_members_list()
+        elif st.session_state.get("show_personal_data"):
+            personal_data_module.run_as_module()
 
     except Exception as e:
         st.error("❌ An error occurred in the main application")
@@ -1429,12 +2291,14 @@ def show_dashboard():
         col1, col2 = st.columns(2)
 
         with col1:
-            if st.button("🔄 Refresh Page"):
+            if st.button("🔄 Refresh Page", key="error_refresh"):
                 st.rerun()
         with col2:
-            if st.button("🏠 Return to Dashboard"):
+            if st.button("🏠 Return to Dashboard", key="error_home"):
                 st.session_state.show_add_form = False
                 st.session_state.edit_member = None
+                st.session_state.show_view_records = False
+                st.session_state.show_meeting_data = False  # NEW
                 st.rerun()
 
 
@@ -1442,9 +2306,10 @@ def show_dashboard_with_sidebar():
     """Combined function that shows both sidebar and dashboard after login"""
     # Show sidebar first
     show_sidebar()
-    show_add_member_form()
+
     # Then show dashboard content
     show_dashboard()
+
 
 def show_add_member_form():
     st.header("➕ Add New Member")
@@ -1452,7 +2317,7 @@ def show_add_member_form():
     col1, col2 = st.columns([3, 1])
 
     with col2:
-        if st.button("⬅️ Back to Dashboard"):
+        if st.button("⬅️ Back to Dashboard", key="back_from_add_member_temp_999"):
             st.session_state.show_add_form = False
             st.rerun()
 
@@ -1462,24 +2327,23 @@ def show_add_member_form():
         with col1:
             name = st.text_input("Full Name*", placeholder="Enter member's full name")
             toa = st.text_input("Terms of Visit (TOA)", placeholder="enter the time of attending")
-            payment = st.number_input("Payment Amount*", min_value=0.01, step=0.01, format="%.2f",
-                                      help="Must be greater than 0")
-
 
         with col2:
             mode = st.text_input("Mode", placeholder="e.g., Cash, Online, Cheque")  # ADD THIS LINE
-
+            payment = st.number_input("Payment Amount*", min_value=100, step=100,
+                                      help="Must be greater than 0")
 
         submitted = st.form_submit_button("Add Member", use_container_width=True)
 
         if submitted:
             with st.spinner("Adding member..."):
-                result = add_member(name, toa, payment, mode, signature_status)  # Now mode is defined
+                result = add_member(name, toa, payment, mode)  # Now mode is defined
                 if result:
                     st.success(f"✅ Member '{name}' added successfully!")
                     time.sleep(1)
                     st.session_state.show_add_form = False
                     st.rerun()
+
 
 def show_edit_member_form():
     member_data = st.session_state.edit_member
@@ -1488,7 +2352,7 @@ def show_edit_member_form():
     col1, col2 = st.columns([3, 1])
 
     with col2:
-        if st.button("⬅️ Back to Dashboard"):
+        if st.button("⬅️ Back to Dashboard", key="back_from_edit_member_form_2"):
             st.session_state.edit_member = None
             st.rerun()
 
@@ -1503,24 +2367,54 @@ def show_edit_member_form():
 
         with col1:
             name = st.text_input("Full Name*", value=member_data.get('name', ''))
-            payment = st.number_input("Payment Amount*", min_value=0.01, step=0.01,
-                                      value=float(member_data.get('payment', 0)), format="%.2f")
+
+            # Safely get existing payment from member_data, default to 0
+            raw_payment = member_data.get("payment", 0)
+
+            # Convert to float for UI display
+            try:
+                if raw_payment is None or (isinstance(raw_payment, float) and math.isnan(raw_payment)):
+                    payment_value = 0.0
+                else:
+                    payment_value = float(raw_payment)
+            except (ValueError, TypeError):
+                payment_value = 0.0
+
+            # Show number input in UI
+            payment_input = st.number_input(
+                "Payment Amount*",
+                min_value=0.0,
+                step=100.0,
+                value=payment_value,
+                format="%.2f"
+            )
+
             toa = st.text_input("Terms of Visit (TOA)", value=member_data.get('toa', ''))
 
         with col2:
-            mode = st.text_input("Mode", value=member_data.get('mode', ''))  # ADD THIS LINE
+            mode = st.text_input("Mode", value=member_data.get('mode', ''))
 
         submitted = st.form_submit_button("Update Member", use_container_width=True)
 
         if submitted:
+            # Convert payment to integer for database storage
+            try:
+                payment = int(round(payment_input))  # Round to nearest integer to handle floating point precision
+            except (ValueError, TypeError):
+                st.error("Invalid payment amount. Please enter a valid number.")
+                st.stop()
+
             with st.spinner("Updating member..."):
-                # FIXED: Correct parameter order
-                result = update_member(id, name, toa, payment, mode)
+                member_id = member_data.get('id')
+                result = update_member(member_id, name, toa, payment, mode)
+
                 if result:
                     st.success(f"✅ Member '{name}' updated successfully!")
                     time.sleep(1)
                     st.session_state.edit_member = None
                     st.rerun()
+                else:
+                    st.error("Failed to update member. Please try again.")
 
 
 def show_members_list():
@@ -1548,7 +2442,6 @@ def show_members_list():
     stats = get_stats(df)
 
     col1, col2, col3 = st.columns(3)
-
 
     # Show members table with error handling
     if df is not None and not df.empty:
@@ -1580,7 +2473,6 @@ def show_members_list():
                 st.markdown("**Payment**")
             with col4:
                 st.markdown("**Mode**")
-
 
             st.markdown("---")
 
@@ -1634,23 +2526,22 @@ def show_members_list():
     else:
         if st.session_state.search_query:
             st.info(f"No members found matching '{st.session_state.search_query}'")
-            if st.button("🔄 Try Different Search", use_container_width=True):
+            if st.button("🔄 Try Different Search", use_container_width=True, key="15"):
                 st.session_state.search_query = ""
                 st.rerun()
         else:
             st.info("No members found. Add some members to get started!")
-            if st.button("➕ Add First Member"):
+            if st.button("➕ Add First Member", key="16"):
                 st.session_state.show_add_form = True
                 st.rerun()
 
 
-
-#if __name__ == "__main__":
-#show_dashboard_with_sidebar()
+# if __name__ == "__main__":
+# show_dashboard_with_sidebar()
 
 # Example usage - you would call this function in your Streamlit app
-#if __name__ == "__main__":
-#show_calendar_widget()
+# if __name__ == "__main__":
+# show_calendar_widget()
 
 # Main application with login flow
 def main():
@@ -1661,7 +2552,7 @@ def main():
         # Global error recovery check
         if st.session_state.get('error_count', 0) > 5:
             st.error("🚨 Multiple errors detected. Resetting application state...")
-            if st.button("🔄 Reset Application"):
+            if st.button("🔄 Reset Application", key="17"):
                 for key in list(st.session_state.keys()):
                     del st.session_state[key]
                 st.rerun()
@@ -1689,25 +2580,28 @@ def main():
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            if st.button("🔄 Refresh Page"):
+            if st.button("🔄 Refresh Page", key="18"):
                 st.rerun()
 
         with col2:
-            if st.button("🧹 Clear Session"):
+            if st.button("🧹 Clear Session", key="19"):
                 for key in list(st.session_state.keys()):
                     del st.session_state[key]
                 st.rerun()
 
         with col3:
-            if st.button("🔧 Reset Admin"):
+            if st.button("🔧 Reset Admin", key="20"):
                 try:
                     reset_admin_password()
                 except:
                     st.error("Could not reset admin account")
 
+
 if __name__ == "__main__":
     main()
     init_session_state()
+
+
 
 
 

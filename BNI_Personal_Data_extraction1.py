@@ -3,7 +3,6 @@ import numpy as np
 import os, re
 from collections import defaultdict, Counter
 from sklearn.cluster import KMeans
-import streamlit as st
 from datetime import datetime, date
 import warnings
 
@@ -16,11 +15,11 @@ os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 os.environ["FLAGS_use_mkldnn"] = "0"
 
-# Global OCR instance
+# Global OCR instance - will be initialized lazily
 ocr_instance = None
 
 # ========= CONFIG =========
-COLUMNS = ['Name', 'TOA', 'Payment', 'Mode', 'Signature']
+COLUMNS = ['Name', 'Date of Birth', 'Joining Date', 'Category']
 
 def get_ocr_instance():
     """Initialize OCR instance only when needed and cache it"""
@@ -60,13 +59,12 @@ def get_ocr_instance():
         ocr_instance = None
         return None
 
-
 def parse_date(date_text):
     """
     Parse various date formats and return a date object
     """
     if not date_text or pd.isna(date_text) or str(date_text).strip() == "":
-        return date.today()
+        return None  # Return None for empty dates instead of today's date
 
     date_str = str(date_text).strip()
 
@@ -83,6 +81,7 @@ def parse_date(date_text):
         "%d %B %Y",  # 15 January 2024
         "%d/%m/%y",  # 15/01/24
         "%m/%d/%y",  # 01/15/24
+        "%Y",  # Just year like 1990
     ]
 
     for fmt in date_formats:
@@ -100,9 +99,11 @@ def parse_date(date_text):
     except:
         pass
 
-    # If all parsing fails, return today's date
-    print(f"Could not parse date '{date_text}', using today's date")  # Use print instead of st.warning
-    return date.today()
+    # If all parsing fails, return None and show warning
+    st.warning(f"Could not parse date '{date_text}', leaving as text")
+    return date_str  # Return original text if can't parse
+
+
 def extract_data_from_image(image_path):
     """Extract data from image using PaddleOCR"""
 
@@ -159,36 +160,75 @@ def extract_data_from_image(image_path):
         return pd.DataFrame(columns=COLUMNS)
 
 
+def is_date_like(text):
+    """Check if text looks like a date"""
+    if not text:
+        return False
+
+    text = str(text).strip()
+
+    # Date patterns
+    date_patterns = [
+        r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}',  # DD/MM/YYYY or MM/DD/YYYY
+        r'\d{4}[/-]\d{1,2}[/-]\d{1,2}',  # YYYY/MM/DD
+        r'\d{1,2}\.\d{1,2}\.\d{2,4}',  # DD.MM.YYYY
+        r'\d{4}',  # Just year
+        r'[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4}',  # January 15, 2024
+        r'\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4}',  # 15 January 2024
+    ]
+
+    return any(re.match(pattern, text) for pattern in date_patterns)
+
+
+def is_category_like(text):
+    """Check if text looks like a category/department"""
+    if not text:
+        return False
+
+    text = str(text).strip().lower()
+
+    # Common category/department keywords
+    category_keywords = [
+        'admin', 'hr', 'finance', 'it', 'sales', 'marketing', 'operations',
+        'manager', 'executive', 'assistant', 'officer', 'clerk', 'analyst',
+        'engineer', 'developer', 'consultant', 'supervisor', 'coordinator',
+        'specialist', 'trainee', 'intern', 'senior', 'junior', 'lead',
+        'department', 'team', 'division', 'unit', 'section'
+    ]
+
+    # Check if it's mostly alphabetic and contains category-like words
+    if re.search(r'[A-Za-z]', text) and len(text) > 2:
+        if any(keyword in text for keyword in category_keywords):
+            return True
+        # Also consider text that's mostly alphabetic as potential category
+        if len(re.sub(r'[^A-Za-z]', '', text)) >= len(text) * 0.7:
+            return True
+
+    return False
+
+
 def process_ocr_data(ocr_items):
     """Process OCR items and return structured DataFrame"""
 
     # ========= Helpers =========
     num_re = re.compile(r'^\d{1,2}\.?$')
-    time_re = re.compile(r'^\s*(?:[0-2]?\d)[:.][0-5]\d\s*$')  # 7:35, 7.35, 07:25 etc
-    moneyish_re = re.compile(r'^\s*[\d,.]{3,}\s*$')  # 7000, 9,000, 12135
-    cash_tokens = {"cash", "done", "online", "upi", "od", "cheque", "dd"}
 
     def is_row_number(txt):
         t = txt.strip().replace(' ', '')
         return bool(num_re.match(t))
 
-    def is_time(txt):
-        t = txt.strip().lower().replace('~', '').replace('^', '')
-        return (':' in t or '.' in t) and bool(time_re.match(t))
-
-    def is_money(txt):
-        t = txt.strip().lower()
-        if t in cash_tokens:
-            return True
-        if any(k in t for k in ["rs", "₹"]):
-            return True
-        if is_time(t):
+    def is_name_like(txt):
+        """Check if text looks like a person's name"""
+        if not txt:
             return False
-        return bool(moneyish_re.match(t)) or re.match(r'^[1-9]\d{2,}$', t) is not None
 
-    def is_alphaish(txt):
         t = txt.strip()
-        return (len(re.sub(r'[^A-Za-z]', '', t)) >= 2) and not re.match(r'^\d', t)
+        # Should be mostly alphabetic, at least 2 characters, and not start with digit
+        if len(re.sub(r'[^A-Za-z\s]', '', t)) >= 2 and not re.match(r'^\d', t):
+            # Should have at least some alphabetic characters
+            if re.search(r'[A-Za-z]', t):
+                return True
+        return False
 
     # ========= 1) Find table region start & isolate data =========
     rownum_candidates = [it for it in ocr_items if is_row_number(it["text"])]
@@ -263,7 +303,6 @@ def process_ocr_data(ocr_items):
     rows = trim_empty_row_edges(rows)
 
     # ========= 3) Column detection =========
-    # Filter out row numbers from clustering
     flat = []
     for row in rows:
         for it in row:
@@ -275,9 +314,11 @@ def process_ocr_data(ocr_items):
         return pd.DataFrame(columns=COLUMNS)
 
     X = np.array([it["x"] for it in flat]).reshape(-1, 1)
-    k = len(COLUMNS)
+    k = min(len(COLUMNS), len(flat))  # Don't cluster more than available items
 
-    # Use n_init='auto' for newer sklearn versions, fallback to 10 for older versions
+    if k < len(COLUMNS):
+        k = len(COLUMNS)
+
     try:
         kmeans = KMeans(n_clusters=k, random_state=42, n_init='auto').fit(X)
     except (TypeError, ValueError):
@@ -288,54 +329,13 @@ def process_ocr_data(ocr_items):
     def cluster_idx(x):
         return int(np.argmin([abs(x - c) for c in centers]))
 
-    # Collect statistics for each cluster
-    stats = {i: Counter() for i in range(k)}
-    examples = {i: [] for i in range(k)}
-    for it in flat:
-        ci = cluster_idx(it["x"])
-        t = it["text"]
-        if is_row_number(t): stats[ci]["rownum"] += 1
-        if is_alphaish(t):   stats[ci]["alpha"] += 1
-        if is_money(t):      stats[ci]["money"] += 1
-        if is_time(t):       stats[ci]["time"] += 1
-        examples[ci].append(t)
+    # Sort clusters left to right
+    sorted_clusters = sorted(range(k), key=lambda i: centers[i])
 
-    ordered_clusters = list(range(k))
-    label_map = {}
+    # Map clusters to columns
+    cluster_to_col = {cluster: i for i, cluster in enumerate(sorted_clusters)}
 
-    # Column assignment logic for 5 columns
-    # 1) rightmost cluster = Signature
-    label_map["Signature"] = max(ordered_clusters, key=lambda i: centers[i])
-    remaining = [i for i in ordered_clusters if i not in label_map.values()]
-
-    # 2) leftmost remaining cluster = Name
-    if remaining:
-        name_c = min(remaining, key=lambda i: centers[i])
-        label_map["Name"] = name_c
-        remaining.remove(name_c)
-
-    # 3) among remaining, cluster with most 'time' = TOA
-    if remaining:
-        toa_c = max(remaining, key=lambda i: (stats[i]["time"], -centers[i]))
-        label_map["TOA"] = toa_c
-        remaining.remove(toa_c)
-
-    # 4) among remaining, cluster with most 'money' = Payment
-    if remaining:
-        payment_c = max(remaining, key=lambda i: stats[i]["money"])
-        label_map["Payment"] = payment_c
-        remaining.remove(payment_c)
-
-    # 5) Mode from remaining
-    if remaining:
-        label_map["Mode"] = remaining[0]
-
-    # Map each cluster to its column index
-    cluster_to_col = {}
-    for col_name, cl in label_map.items():
-        cluster_to_col[cl] = COLUMNS.index(col_name)
-
-    # ========= 4) Row assembly =========
+    # ========= 4) Row assembly with smart column assignment =========
     processed = []
     for r_elems in rows:
         if not r_elems:
@@ -345,6 +345,7 @@ def process_ocr_data(ocr_items):
         # Process non-row-number items
         other_items = [it for it in r_elems if not is_row_number(it["text"])]
 
+        # First pass: assign to columns based on position
         for it in sorted(other_items, key=lambda d: d["x"]):
             ci = cluster_idx(it["x"])
             col_idx = cluster_to_col.get(ci, len(COLUMNS) - 1)
@@ -356,24 +357,48 @@ def process_ocr_data(ocr_items):
                 txt = ' '.join(toks).strip()
                 row[ci] = txt
 
-        # Data cleaning and validation
-        # If Payment column has money-like text and TOA is empty, swap them
-        if len(row) > 2 and row[2] and is_money(row[2]) and not row[1]:
-            row[1], row[2] = row[2], ''
-
-        # If Name is empty and Payment has alpha text, swap them
-        if len(row) > 2 and not row[0] and row[2] and is_alphaish(row[2]):
-            row[0], row[2] = row[2], ''
-
-        # Clean signature column (remove very short non-alphabetic entries)
-        if len(row) > 4 and row[4] and len(row[4]) <= 2 and not is_alphaish(row[4]):
-            row[4] = ''
-
         # Skip completely empty rows
         if not any(x.strip() for x in row):
             continue
 
-        processed.append(row)
+        # Smart reassignment based on content type
+        final_row = [''] * len(COLUMNS)
+        used_positions = set()
+
+        for i, content in enumerate(row):
+            if not content.strip():
+                continue
+
+            # Try to identify what type of content this is
+            if is_name_like(content) and 0 not in used_positions:
+                final_row[0] = content  # Name column
+                used_positions.add(0)
+            elif is_date_like(content):
+                # Try to determine if it's DOB or Joining Date
+                # If both date columns are empty, prefer DOB for earlier position
+                if 1 not in used_positions:
+                    final_row[1] = content  # Date of Birth
+                    used_positions.add(1)
+                elif 2 not in used_positions:
+                    final_row[2] = content  # Joining Date
+                    used_positions.add(2)
+            elif is_category_like(content) and 3 not in used_positions:
+                final_row[3] = content  # Category column
+                used_positions.add(3)
+            else:
+                # Put in original position if available, otherwise find first empty spot
+                if i not in used_positions and i < len(COLUMNS):
+                    final_row[i] = content
+                    used_positions.add(i)
+                else:
+                    # Find first empty position
+                    for j in range(len(COLUMNS)):
+                        if j not in used_positions:
+                            final_row[j] = content
+                            used_positions.add(j)
+                            break
+
+        processed.append(final_row)
 
     # Filter valid rows
     final_rows = []
@@ -392,5 +417,13 @@ def process_ocr_data(ocr_items):
 
     # Remove completely empty rows
     df = df[df.apply(lambda x: any(x.astype(str).str.strip() != ''), axis=1)]
+
+    # Parse and format dates properly for both date columns
+    for date_col in ['Date of Birth', 'Joining Date']:
+        if date_col in df.columns:
+            df[date_col] = df[date_col].apply(parse_date)
+
+    # Clean and validate the data
+    df = df.reset_index(drop=True)
 
     return df
