@@ -439,7 +439,7 @@ def get_all_members() -> pd.DataFrame:
 
         df = pd.DataFrame(response.data)
         logger.info(f"Successfully fetched {len(df)} members")
-        print(df.columns)
+        #print(df.columns)
         return df
 
     except Exception as e:
@@ -797,7 +797,7 @@ def show_calendar_widget():
         if 'selected_dates_calendar' not in st.session_state:
             st.session_state.selected_dates_calendar = set()
         if 'weekly_amount' not in st.session_state:
-            st.session_state.weekly_amount = 1500.0
+            st.session_state.weekly_amount = 1400.0
         if 'calculation_results' not in st.session_state:
             st.session_state.calculation_results = {}
         if 'calendar_initialized' not in st.session_state:
@@ -1804,7 +1804,7 @@ def show_meeting_data():
     if 'meeting_data_selected_year' not in st.session_state:
         st.session_state.meeting_data_selected_year = datetime.now().year
     if 'weekly_payment_amount' not in st.session_state:
-        st.session_state.weekly_payment_amount = 1500.0
+        st.session_state.weekly_payment_amount = 1400.0
 
     st.write("### 📅 Select Month and Year")
 
@@ -2119,6 +2119,7 @@ def show_login():
                     st.rerun()
 
 
+
 # Enhanced dashboard with error monitoring
 def show_dashboard():
     """Main dashboard function - UPDATED VERSION"""
@@ -2213,7 +2214,11 @@ def show_dashboard():
 
         st.divider()
 
-        extracted_data = st.session_state.extracted_data
+        extracted_data = st.session_state.get('extracted_data')
+
+        if extracted_data is None:
+            st.info("No data extracted yet. Please upload or capture an image to begin.")
+            return
 
         # Ensure extracted_data is a pandas DataFrame
         if isinstance(extracted_data, list):
@@ -2323,8 +2328,6 @@ def show_dashboard():
             if st.button("↩️ Cancel", key="cancel_delete"):
                 st.session_state.delete_confirmation = None
                 st.rerun()
-
-    # Main content area based on current state
     try:
         if st.session_state.get("show_calendar"):
             show_calendar_widget()
@@ -2332,7 +2335,7 @@ def show_dashboard():
             show_add_member_form()
         elif st.session_state.get("show_view_records"):
             show_view_records()
-        elif st.session_state.get("show_meeting_data"):  # NEW
+        elif st.session_state.get("show_meeting_data"):
             show_meeting_data()
         elif st.session_state.get("edit_member"):
             show_edit_member_form()
@@ -2763,6 +2766,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-    init_session_state()
-    st.code(traceback.format_exc())
+    #init_session_state()
+    #st.code(traceback.format_exc())
 
