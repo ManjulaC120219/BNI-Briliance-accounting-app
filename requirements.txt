@@ -1,10 +1,12 @@
 streamlit
+opencv-python-headless
 paddlepaddle==3.0.0
 paddleocr==2.8.1
-opencv-python-headless
-pillow
-numpy
+pandas
+numpy==1.26.4
+Pillow
 protobuf
 shapely
 scikit-learn
 supabase
+setuptools
