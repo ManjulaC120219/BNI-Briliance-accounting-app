@@ -1,396 +1,493 @@
+from paddleocr import PaddleOCR
 import pandas as pd
 import numpy as np
+import cv2
 import os, re
-from collections import defaultdict, Counter
-from sklearn.cluster import KMeans
-import streamlit as st
-from datetime import datetime, date
-import warnings
-
-# Suppress warnings for cleaner output
-warnings.filterwarnings("ignore")
-
-# Set environment variables before importing PaddleOCR
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
-os.environ["FLAGS_use_mkldnn"] = "0"
-
-# Global OCR instance
-ocr_instance = None
+from collections import defaultdict
+import tempfile
 
 # ========= CONFIG =========
-COLUMNS = ['Name', 'TOA', 'Payment', 'Mode', 'Signature']
+COLUMNS = ['Name', 'Payment', 'TOA', 'Mode']  # Only 4 columns as requested
 
-def get_ocr_instance():
-    """Initialize OCR instance only when needed and cache it"""
-    global ocr_instance
+def simple_preprocess(image_path):
+    """Enhanced preprocessing for better OCR"""
+    image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    if image is None:
+        raise ValueError(f"Could not read image from {image_path}")
 
-    if ocr_instance is not None:
-        return ocr_instance
+    # Light bilateral filtering
+    filtered = cv2.bilateralFilter(image, 5, 50, 50)
+
+    # Slight sharpening for handwritten text
+    kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
+    sharpened = cv2.filter2D(filtered, -1, kernel)
+
+    return sharpened
+
+
+def save_temp_image(image_array):
+    """Save image to temporary file"""
+    temp_file = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+    cv2.imwrite(temp_file.name, image_array)
+    return temp_file.name
+
+from difflib import SequenceMatcher
+
+
+def extract_data_from_image_v2(image_path):
+    """
+    COMPLETE CLEAN VERSION: Extract 4 columns without duplicates and noise
+    """
+    print("DEBUG: Starting COMPLETE CLEAN extraction")
 
     try:
-        from paddleocr import PaddleOCR
+        # Enhanced preprocessing
+        processed = simple_preprocess(image_path)
+        temp_path = save_temp_image(processed)
 
+        # Multiple OCR approaches
+        all_ocr_items = []
+
+        # Approach 1: Ultra-aggressive for handwritten
         try:
-            ocr_instance = PaddleOCR(
+            ocr1 = PaddleOCR(
+                use_angle_cls=False,
+                lang='en',
+                use_gpu=False,
+                show_log=False,
+                det_db_thresh=0.01,
+                det_db_box_thresh=0.03,
+                det_db_unclip_ratio=3.5,
+                rec_batch_num=20
+            )
+            result1 = ocr1.ocr(temp_path, cls=True)
+            if result1 and result1[0]:
+                all_ocr_items.extend(result1[0])
+                print(f"DEBUG: Ultra-aggressive OCR found {len(result1[0])} items")
+        except Exception as e:
+            print(f"DEBUG: Ultra-aggressive OCR failed: {e}")
+
+        # Approach 2: Standard OCR
+        try:
+            ocr2 = PaddleOCR(
                 use_angle_cls=True,
                 lang='en',
+                use_gpu=False,
                 show_log=False,
-                use_gpu=False,  # Fixed: was True/False which is invalid
-                enable_mkldnn=False,
-                cpu_threads=1,
-                det_model_dir=None,  # Use default models
-                rec_model_dir=None,  # Use default models
-                cls_model_dir=None  # Use default models
+                det_db_thresh=0.25,
+                det_db_box_thresh=0.4,
+                det_db_unclip_ratio=1.5
             )
-            return ocr_instance
+            result2 = ocr2.ocr(image_path, cls=True)
+            if result2 and result2[0]:
+                # Add unique items based on text similarity
+                existing_texts = {item[1][0].strip().lower() for item in all_ocr_items if len(item) >= 2}
+                for item in result2[0]:
+                    if len(item) >= 2:
+                        text = item[1][0].strip().lower()
+                        if text not in existing_texts:
+                            all_ocr_items.append(item)
+                            existing_texts.add(text)
+
+                print(f"DEBUG: Total after standard merge: {len(all_ocr_items)}")
         except Exception as e:
-            print(f"Error initializing PaddleOCR: {e}")  # Use print instead of st.error
-            ocr_instance = None
-            return None
+            print(f"DEBUG: Standard OCR failed: {e}")
 
-    except ImportError as e:
-        print(f"Failed to import PaddleOCR: {e}")  # Use print instead of st.error
-        print("Please ensure PaddleOCR is properly installed")
-        ocr_instance = None
-        return None
-    except Exception as e:
-        print(f"Failed to initialize PaddleOCR: {e}")  # Use print instead of st.error
-        ocr_instance = None
-        return None
-
-
-def parse_date(date_text):
-    """
-    Parse various date formats and return a date object
-    """
-    if not date_text or pd.isna(date_text) or str(date_text).strip() == "":
-        return date.today()
-
-    date_str = str(date_text).strip()
-
-    # Common date formats to try
-    date_formats = [
-        "%Y-%m-%d",  # 2024-01-15
-        "%d/%m/%Y",  # 15/01/2024
-        "%m/%d/%Y",  # 01/15/2024
-        "%d-%m-%Y",  # 15-01-2024
-        "%m-%d-%Y",  # 01-15-2024
-        "%d.%m.%Y",  # 15.01.2024
-        "%Y/%m/%d",  # 2024/01/15
-        "%B %d, %Y",  # January 15, 2024
-        "%d %B %Y",  # 15 January 2024
-        "%d/%m/%y",  # 15/01/24
-        "%m/%d/%y",  # 01/15/24
-    ]
-
-    for fmt in date_formats:
+        # Approach 3: Extremely aggressive bottom area processing for handwritten
         try:
-            parsed_date = datetime.strptime(date_str, fmt).date()
-            return parsed_date
-        except ValueError:
-            continue
+            img = cv2.imread(image_path)
+            if img is not None:
+                height = img.shape[0]
+                # Process bottom 30% where handwritten entries are located
+                bottom_crop = img[int(height * 0.7):, :]
 
-    # If no format matches, try pandas
-    try:
-        parsed_date = pd.to_datetime(date_str, errors='coerce')
-        if not pd.isna(parsed_date):
-            return parsed_date.date()
-    except:
-        pass
+                if bottom_crop.size > 0:
+                    # Apply additional preprocessing for handwritten text
+                    bottom_gray = cv2.cvtColor(bottom_crop, cv2.COLOR_BGR2GRAY)
+                    bottom_enhanced = cv2.bilateralFilter(bottom_gray, 9, 75, 75)
 
-    # If all parsing fails, return today's date
-    print(f"Could not parse date '{date_text}', using today's date")  # Use print instead of st.warning
-    return date.today()
-def extract_data_from_image(image_path):
-    """Extract data from image using PaddleOCR"""
+                    # Save enhanced bottom crop
+                    temp_bottom = save_temp_image(bottom_enhanced)
 
-    if ocr_instance is None:
-        st.error("PaddleOCR not initialized. Please check your installation.")
-        return pd.DataFrame(columns=COLUMNS)
+                    # Extremely aggressive OCR for handwritten
+                    ocr3 = PaddleOCR(
+                        use_angle_cls=False,
+                        lang='en',
+                        use_gpu=False,
+                        show_log=False,
+                        det_db_thresh=0.001,  # Ultra-extreme threshold
+                        det_db_box_thresh=0.005,
+                        det_db_unclip_ratio=5.0,  # Maximum expansion
+                        rec_batch_num=30
+                    )
+                    result3 = ocr3.ocr(temp_bottom, cls=True)
 
-    try:
-        # Use the cached OCR instance
-        with st.spinner("Processing image with OCR..."):
-            result = ocr_instance.ocr(image_path, cls=True)
+                    if result3 and result3[0]:
+                        # Adjust coordinates back to full image
+                        for item in result3[0]:
+                            if len(item) >= 2:
+                                poly = item[0]
+                                for point in poly:
+                                    point[1] += int(height * 0.7)
 
-        if not result or not result[0]:
-            st.warning("No text detected in the image. Please ensure the image contains readable text.")
-            return pd.DataFrame(columns=COLUMNS)
+                        all_ocr_items.extend(result3[0])
+                        print(f"DEBUG: Ultra-aggressive bottom processing found {len(result3[0])} items")
 
-        # Extract OCR data
-        ocr_items = []
-        for line in result[0]:
-            if not line or len(line) != 2:
+                    os.unlink(temp_bottom)
+
+                # ADDITIONAL: Try the very bottom 15% with different preprocessing
+                bottom_5_crop = img[int(height * 0.95):, :]
+
+                if bottom_5_crop.size > 0:
+                    # Enhance contrast and sharpen
+                    bottom_5_gray = cv2.cvtColor(bottom_5_crop, cv2.COLOR_BGR2GRAY)
+                    # Adaptive thresholding to pull out faint handwriting
+                    thresh = cv2.adaptiveThreshold(bottom_5_gray, 255,
+                                                   cv2.ADAPTIVE_THRESH_MEAN_C,
+                                                   cv2.THRESH_BINARY_INV, 15, 10)
+
+                    kernel = np.array([[-1, -1, -1], [-1, 12, -1], [-1, -1, -1]])
+                    sharpened = cv2.filter2D(thresh, -1, kernel)
+
+                    temp_bottom_5 = save_temp_image(sharpened)
+
+                    ocr5 = PaddleOCR(
+                        use_angle_cls=False,
+                        lang='en',
+                        use_gpu=False,
+                        show_log=False,
+                        det_db_thresh=0.0002,
+                        det_db_box_thresh=0.0005,
+                        det_db_unclip_ratio=6.0,
+                    )
+                    result5 = ocr5.ocr(temp_bottom_5, cls=True)
+
+                    if result5 and result5[0]:
+                        for item in result5[0]:
+                            if len(item) >= 2:
+                                for point in item[0]:
+                                    point[1] += int(height * 0.95)  # re-map Y
+                        all_ocr_items.extend(result5[0])
+                        print(f"DEBUG: Bottom 5% processing found {len(result5[0])} additional items")
+
+                    os.unlink(temp_bottom_5)
+
+
+        except Exception as e:
+            print(f"DEBUG: Bottom processing failed: {e}")
+
+        os.unlink(temp_path)
+
+    except Exception as e:
+        print(f"DEBUG: Fallback OCR: {e}")
+        ocr = PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
+        result = ocr.ocr(image_path, cls=True)
+        all_ocr_items = result[0] if result and result[0] else []
+
+    if not all_ocr_items:
+        raise RuntimeError("No OCR results")
+
+    # Parse OCR items with very lenient filtering
+    ocr_items = []
+    for line in all_ocr_items:
+        if line and len(line) >= 2:
+            poly, (text, score) = line[0], line[1]
+
+            # Very lenient confidence threshold
+            if score < 0.05:
                 continue
 
-            bbox, (text, confidence) = line
+            xs = [p[0] for p in poly]
+            ys = [p[1] for p in poly]
+            width = max(xs) - min(xs)
+            height = max(ys) - min(ys)
 
-            if not text or confidence < 0.5:  # Skip low confidence results
+            # Minimal size filtering
+            if width < 2 or height < 2:
                 continue
-
-            # Calculate bounding box center and dimensions
-            xs = [point[0] for point in bbox]
-            ys = [point[1] for point in bbox]
-            x_min, x_max = min(xs), max(xs)
-            y_min, y_max = min(ys), max(ys)
 
             ocr_items.append({
-                "text": text.strip(),
-                "score": float(confidence),
-                "x": (x_min + x_max) / 2.0,
-                "y": (y_min + y_max) / 2.0,
-                "xmin": x_min, "xmax": x_max,
-                "ymin": y_min, "ymax": y_max,
-                "w": x_max - x_min,
-                "h": y_max - y_min
+                'text': text.strip(),
+                'score': float(score),
+                'x': sum(xs) / len(xs),
+                'y': sum(ys) / len(ys),
+                'width': width,
+                'height': height
             })
 
-        if not ocr_items:
-            st.warning("No valid text detected with sufficient confidence.")
-            return pd.DataFrame(columns=COLUMNS)
+    print(f"DEBUG: Parsed {len(ocr_items)} OCR items")
 
-        return process_ocr_data(ocr_items)
+    # Sort by Y coordinate
+    ocr_items.sort(key=lambda x: x['y'])
 
-    except Exception as e:
-        st.error(f"OCR processing failed: {str(e)}")
-        st.error("Please try with a different image or check if the image is readable.")
-        return pd.DataFrame(columns=COLUMNS)
+    def is_person_name(text):
+        """Improved name detection to eliminate noise"""
+        text = text.strip()
 
-
-def process_ocr_data(ocr_items):
-    """Process OCR items and return structured DataFrame"""
-
-    # ========= Helpers =========
-    num_re = re.compile(r'^\d{1,2}\.?$')
-    time_re = re.compile(r'^\s*(?:[0-2]?\d)[:.][0-5]\d\s*$')  # 7:35, 7.35, 07:25 etc
-    moneyish_re = re.compile(r'^\s*[\d,.]{3,}\s*$')  # 7000, 9,000, 12135
-    cash_tokens = {"cash", "done", "online", "upi", "od", "cheque", "dd"}
-
-    def is_row_number(txt):
-        t = txt.strip().replace(' ', '')
-        return bool(num_re.match(t))
-
-    def is_time(txt):
-        t = txt.strip().lower().replace('~', '').replace('^', '')
-        return (':' in t or '.' in t) and bool(time_re.match(t))
-
-    def is_money(txt):
-        t = txt.strip().lower()
-        if t in cash_tokens:
-            return True
-        if any(k in t for k in ["rs", "₹"]):
-            return True
-        if is_time(t):
+        if len(text) < 3:
             return False
-        return bool(moneyish_re.match(t)) or re.match(r'^[1-9]\d{2,}$', t) is not None
 
-    def is_alphaish(txt):
-        t = txt.strip()
-        return (len(re.sub(r'[^A-Za-z]', '', t)) >= 2) and not re.match(r'^\d', t)
+        lower = text.lower()
 
-    # ========= 1) Find table region start & isolate data =========
-    rownum_candidates = [it for it in ocr_items if is_row_number(it["text"])]
-    rownum_candidates.sort(key=lambda d: (d["y"], d["x"]))
+        # Reject known column headers
+        if lower in ['name', 'payment', 'toa', 'mode', 'signature']:
+            return False
 
-    if not rownum_candidates:
-        data_items = sorted(ocr_items, key=lambda d: (d["y"], d["x"]))
-    else:
-        first_y = rownum_candidates[0]["y"]
-        data_items = [it for it in ocr_items if it["y"] >= first_y - 10]
-        data_items.sort(key=lambda d: (d["y"], d["x"]))
+        # Reject numeric or time-like values
+        if re.match(r'^\d+$', lower) or re.match(r'^\d{1,2}[:.]\d{1,2}$', lower):
+            return False
 
-    # ========= 2) Build row bands =========
-    rownums = [it for it in data_items if is_row_number(it["text"])]
-    rownums.sort(key=lambda d: d["y"])
+        # Reject very short single-word
+        if len(text) <= 4 and ' ' not in text:
+            return False
 
-    # Remove duplicates based on Y position
-    deduped = []
-    for it in rownums:
-        if not deduped or abs(it["y"] - deduped[-1]["y"]) > np.median([r["h"] for r in rownums]) * 0.6:
-            deduped.append(it)
-    rownums = deduped
+        # Reject known invalid patterns (expanded list)
+        noise = [
+            'cash', 'done', 'online', 'cosh', 'cagh', 'upi',
+            'slla', 'caoh', 'cosh', 'fulatomd', 'wine', 'pony', 'ak17', 'rgodti',
+            'cast', 'cagu', 'cogn', 'sub', 'ooo', 'owgou', 'pepol','cash.'
+        ]
+        if lower in noise:
+            return False
 
-    # Create row bands using K-means if not enough row numbers
-    if len(rownums) < 5:
-        ys = np.array([d["y"] for d in data_items]).reshape(-1, 1)
-        median_h = np.median([d["h"] for d in data_items])
-        est_rows = int(max(5, min(40, (max(ys)[0] - min(ys)[0]) / max(8.0, median_h * 1.2))))
+        # Reject words with all uppercase (often false positives like 'FULATOMD')
+        if text.isupper() and len(text) <= 10:
+            return False
 
-        # Use n_init='auto' for newer sklearn versions, fallback to 10 for older versions
-        try:
-            km = KMeans(n_clusters=est_rows, random_state=42, n_init='auto').fit(ys)
-        except (TypeError, ValueError):
-            km = KMeans(n_clusters=est_rows, random_state=42, n_init=10).fit(ys)
+        # Must contain at least 4 letters
+        alpha_chars = sum(c.isalpha() for c in text)
+        if alpha_chars < 4:
+            return False
 
-        centers = sorted(km.cluster_centers_.flatten())
-        row_centers = centers
-    else:
-        row_centers = [r["y"] for r in rownums]
+        # Must contain mostly alphabetic characters
+        total_chars = len(text.replace(' ', '').replace('.', ''))
+        if total_chars == 0 or alpha_chars / total_chars < 0.8:
+            return False
 
-    row_centers = sorted(row_centers)
-    bands = []
-    for i, yc in enumerate(row_centers):
-        y_top = (row_centers[i - 1] + yc) / 2 if i > 0 else yc - 1000
-        y_bot = (yc + row_centers[i + 1]) / 2 if i < len(row_centers) - 1 else yc + 1000
-        bands.append((y_top, y_bot, yc))
+        # Looks like a name: capitalized words
+        words = text.split()
+        if all(w[0].isupper() for w in words if w):
+            return True
 
-    # Assign items to rows
-    rows = [[] for _ in bands]
-    for it in data_items:
-        y = it["y"]
-        idx = None
-        for j, (yt, yb, yc) in enumerate(bands):
-            if yt <= y < yb:
-                idx = j
+        return False
+
+    def is_payment_amount(text):
+        """Enhanced payment detection"""
+        text = text.strip()
+
+        # Clean the text
+        clean = text.replace('₹', '').replace('Rs', '').replace(',', '').replace(' ', '')
+
+        # Direct numeric check
+        if clean.isdigit():
+            amount = int(clean)
+            return 50 <= amount <= 99999
+
+        # Handle OCR errors in payments
+        numeric_match = re.search(r'\d{3,5}', clean)
+        if numeric_match:
+            amount = int(numeric_match.group())
+            return 100 <= amount <= 50000
+
+        return False
+
+    def is_time_format(text):
+        """Detect time values"""
+        patterns = [
+            r'^\d{1,2}[:.]\d{1,2}$',
+            r'^\d{1,2}[:.]\d{1,2}\s*[AP]M?$'
+        ]
+        return any(re.match(pattern, text.strip()) for pattern in patterns)
+
+    def is_mode_value(text):
+        """Detect payment mode"""
+        modes = ['cash', 'online', 'done', 'cosh', 'cagh']
+        return text.lower().strip() in modes
+
+    # Find table start
+    table_start_y = 0
+    for item in ocr_items:
+        if 'name' in item['text'].lower() and len(item['text']) < 10:
+            table_start_y = item['y'] + 15
+            print(f"DEBUG: Table starts at y={table_start_y}")
+            break
+
+    # Filter to table area
+    table_items = [item for item in ocr_items if item['y'] >= table_start_y]
+    print(f"DEBUG: {len(table_items)} items in table area")
+
+    # Get all unique person names with special handling for handwritten
+    all_names = []
+
+    # First pass: collect obvious printed names
+    for item in table_items:
+        if is_person_name(item['text']):
+            all_names.append(item)
+
+    # Second pass: be more lenient for bottom area (handwritten)
+    max_y = max(item['y'] for item in table_items) if table_items else 0
+    bottom_threshold = max_y - 100  # Bottom 150 pixels
+
+    print(f"DEBUG: Looking for handwritten names in bottom area (y >= {bottom_threshold})")
+
+    for item in table_items:
+        if item['y'] >= bottom_threshold:
+            text = item['text'].strip()
+
+            if (len(text) >= 3 and
+                    text[0].isalpha() and
+                    sum(c.isalpha() for c in text) >= 3 and
+                    not any(keyword in text.lower() for keyword in
+                            ['cash', 'done', 'online', 'payment', 'signature', 'mode', 'toa']) and
+                    not re.match(r'^\d{1,4}[:.]\d{2}$', text) and
+                    not re.match(r'^\d{3,6}$', text)):
+
+                # If not already in all_names
+                if text.lower() not in [n['text'].lower() for n in all_names]:
+                    all_names.append(item)
+                    print(f"DEBUG: Added handwritten name: '{text}' at y={item['y']:.0f}")
+
+                # Check if it's a potential name we haven't seen
+                is_duplicate = False
+                for existing in all_names:
+                    if (abs(item['y'] - existing['y']) < 15 or  # Very close Y
+                            text.lower() in existing['text'].lower() or
+                            existing['text'].lower() in text.lower()):
+                        is_duplicate = True
+                        break
+
+                if not is_duplicate:
+                    all_names.append(item)
+                    print(f"DEBUG: Added potential handwritten name: '{text}' at y={item['y']:.0f}")
+
+    # Remove duplicates and sort by Y coordinate
+    from difflib import SequenceMatcher
+
+    def name_similarity(a, b):
+        return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+    # Improved duplicate filtering
+    unique_names = []
+    for item in all_names:
+        is_duplicate = False
+        for existing in unique_names:
+            y_close = abs(item['y'] - existing['y']) < 12
+            similarity = name_similarity(item['text'], existing['text'])
+
+            if y_close and similarity > 0.85:
+                is_duplicate = True
                 break
-        if idx is None:
-            dists = [abs(y - b[2]) for b in bands]
-            idx = int(np.argmin(dists))
-        rows[idx].append(it)
 
-    # Remove empty bands at extremes
-    def trim_empty_row_edges(rlist):
-        start = 0
-        while start < len(rlist) and len(rlist[start]) == 0:
-            start += 1
-        end = len(rlist) - 1
-        while end >= 0 and len(rlist[end]) == 0:
-            end -= 1
-        return rlist[start:end + 1] if end >= start else []
+        if not is_duplicate:
+            unique_names.append(item)
 
-    rows = trim_empty_row_edges(rows)
+    # Update all_names to deduplicated and sorted
+    all_names = sorted(unique_names, key=lambda x: x['y'])
 
-    # ========= 3) Column detection =========
-    # Filter out row numbers from clustering
-    flat = []
-    for row in rows:
-        for it in row:
-            if not is_row_number(it["text"]):
-                flat.append(it)
+    print(f"DEBUG: Found {len(all_names)} unique person names:")
+    for i, name_item in enumerate(all_names):
+        print(f"  {i + 1:2d}: '{name_item['text']}' at y={name_item['y']:.0f}")
 
-    if not flat:
-        st.warning("No table-like data detected in the image.")
-        return pd.DataFrame(columns=COLUMNS)
+    # For each name, find associated data in same row
+    records = []
 
-    X = np.array([it["x"] for it in flat]).reshape(-1, 1)
-    k = len(COLUMNS)
+    for name_item in all_names:
+        name_y = name_item['y']
+        name_x = name_item['x']
+        name_text = name_item['text']
 
-    # Use n_init='auto' for newer sklearn versions, fallback to 10 for older versions
-    try:
-        kmeans = KMeans(n_clusters=k, random_state=42, n_init='auto').fit(X)
-    except (TypeError, ValueError):
-        kmeans = KMeans(n_clusters=k, random_state=42, n_init=10).fit(X)
+        # Find items in same row (within 25 pixels vertically)
+        row_items = []
+        for item in table_items:
+            if (abs(item['y'] - name_y) <= 25 and
+                    item['x'] > name_x and  # To the right of name
+                    item['text'] != name_text):  # Not the name itself
+                row_items.append(item)
 
-    centers = sorted(kmeans.cluster_centers_.flatten())
+        # Create record
+        record = {
+            'name': name_text,
+            'payment': '',
+            'toa': '',
+            'mode': ''
+        }
 
-    def cluster_idx(x):
-        return int(np.argmin([abs(x - c) for c in centers]))
+        # Assign items to columns based on content type
+        for item in row_items:
+            text = item['text'].strip()
 
-    # Collect statistics for each cluster
-    stats = {i: Counter() for i in range(k)}
-    examples = {i: [] for i in range(k)}
-    for it in flat:
-        ci = cluster_idx(it["x"])
-        t = it["text"]
-        if is_row_number(t): stats[ci]["rownum"] += 1
-        if is_alphaish(t):   stats[ci]["alpha"] += 1
-        if is_money(t):      stats[ci]["money"] += 1
-        if is_time(t):       stats[ci]["time"] += 1
-        examples[ci].append(t)
+            if is_time_format(text) and not record['toa']:
+                record['toa'] = text
+            elif is_payment_amount(text) and not record['payment']:
+                record['payment'] = text
+            elif is_mode_value(text) and not record['mode']:
+                record['mode'] = text
 
-    ordered_clusters = list(range(k))
-    label_map = {}
+        records.append(record)
 
-    # Column assignment logic for 5 columns
-    # 1) rightmost cluster = Signature
-    label_map["Signature"] = max(ordered_clusters, key=lambda i: centers[i])
-    remaining = [i for i in ordered_clusters if i not in label_map.values()]
+    print(f"DEBUG: Created {len(records)} individual records")
 
-    # 2) leftmost remaining cluster = Name
-    if remaining:
-        name_c = min(remaining, key=lambda i: centers[i])
-        label_map["Name"] = name_c
-        remaining.remove(name_c)
+    # Show final records
+    print("\nDEBUG: Final extracted records:")
+    for i, record in enumerate(records):
+        print(
+            f"  {i + 1:2d}: '{record['name'][:30]:30s}' | Pay: '{record['payment']:8s}' | TOA: '{record['toa']:8s}' | Mode: '{record['mode']}'")
 
-    # 3) among remaining, cluster with most 'time' = TOA
-    if remaining:
-        toa_c = max(remaining, key=lambda i: (stats[i]["time"], -centers[i]))
-        label_map["TOA"] = toa_c
-        remaining.remove(toa_c)
+    # Convert to DataFrame
+    if records:
+        df_data = []
+        for record in records:
+            df_data.append([
+                record['name'],
+                record['payment'],
+                record['toa'],
+                record['mode']
+            ])
 
-    # 4) among remaining, cluster with most 'money' = Payment
-    if remaining:
-        payment_c = max(remaining, key=lambda i: stats[i]["money"])
-        label_map["Payment"] = payment_c
-        remaining.remove(payment_c)
+        df = pd.DataFrame(df_data, columns=COLUMNS)
+    else:
+        df = pd.DataFrame([['No valid data found', '', '', '']], columns=COLUMNS)
 
-    # 5) Mode from remaining
-    if remaining:
-        label_map["Mode"] = remaining[0]
-
-    # Map each cluster to its column index
-    cluster_to_col = {}
-    for col_name, cl in label_map.items():
-        cluster_to_col[cl] = COLUMNS.index(col_name)
-
-    # ========= 4) Row assembly =========
-    processed = []
-    for r_elems in rows:
-        if not r_elems:
-            continue
-        col_dict = defaultdict(list)
-
-        # Process non-row-number items
-        other_items = [it for it in r_elems if not is_row_number(it["text"])]
-
-        for it in sorted(other_items, key=lambda d: d["x"]):
-            ci = cluster_idx(it["x"])
-            col_idx = cluster_to_col.get(ci, len(COLUMNS) - 1)
-            col_dict[col_idx].append(it["text"])
-
-        row = [''] * len(COLUMNS)
-        for ci, toks in col_dict.items():
-            if ci < len(COLUMNS):
-                txt = ' '.join(toks).strip()
-                row[ci] = txt
-
-        # Data cleaning and validation
-        # If Payment column has money-like text and TOA is empty, swap them
-        if len(row) > 2 and row[2] and is_money(row[2]) and not row[1]:
-            row[1], row[2] = row[2], ''
-
-        # If Name is empty and Payment has alpha text, swap them
-        if len(row) > 2 and not row[0] and row[2] and is_alphaish(row[2]):
-            row[0], row[2] = row[2], ''
-
-        # Clean signature column (remove very short non-alphabetic entries)
-        if len(row) > 4 and row[4] and len(row[4]) <= 2 and not is_alphaish(row[4]):
-            row[4] = ''
-
-        # Skip completely empty rows
-        if not any(x.strip() for x in row):
-            continue
-
-        processed.append(row)
-
-    # Filter valid rows
-    final_rows = []
-    for r in processed:
-        has_name = bool(re.search(r'[A-Za-z]', r[0] or '')) if len(r) > 0 else False
-        has_content = any(x.strip() for x in r)
-
-        if has_name or has_content:
-            final_rows.append(r)
-
-    if not final_rows:
-        st.warning("No valid data rows extracted from the image.")
-        return pd.DataFrame(columns=COLUMNS)
-
-    df = pd.DataFrame(final_rows, columns=COLUMNS)
-
-    # Remove completely empty rows
+    # Remove any completely empty rows
     df = df[df.apply(lambda x: any(x.astype(str).str.strip() != ''), axis=1)]
 
+    print(f"DEBUG: Final DataFrame shape: {df.shape}")
     return df
+
+def test_complete_extraction(image_path):
+    """Test complete extraction without duplicates and noise"""
+    try:
+        print("=" * 60)
+        print("COMPLETE CLEAN EXTRACTION - NO NOISE, INCLUDES HANDWRITTEN")
+        print("=" * 60)
+
+        result_df = extract_data_from_image_v2(image_path)
+
+        print(f"\nFinal Results - {len(result_df)} clean records:")
+        print(result_df.to_string(index=False, max_colwidth=30))
+
+        return result_df
+
+    except Exception as e:
+        print(f"Complete extraction failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+if __name__ == "__main__":
+    image_path = "accounting.jpeg"
+
+    if os.path.exists(image_path):
+        df = test_complete_extraction(image_path)
+        if df is not None:
+            print(f"\nSuccess! Extracted {len(df)} clean records with no noise.")
+
+            # Save to CSV
+            output_path = "extracted_complete_clean.csv"
+            df.to_csv(output_path, index=False)
+            print(f"Results saved to: {output_path}")
+        else:
+            print("Extraction failed.")
+    else:
+        print(f"Image file not found: {image_path}")

@@ -26,8 +26,7 @@ import BNI_personal_data1 as personal_data_module
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from Final_bni_data_extraction import extract_data_from_image
-
+from Final_bni_data_extraction import extract_data_from_image_v2
 # Supabase configuration
 SUPABASE_URL = "https://dvzpeyupbyqkehksvmpc.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImR2enBleXVwYnlxa2Voa3N2bXBjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU3NzQwNzMsImV4cCI6MjA3MTM1MDA3M30.cKw87wSBjpqBMp42cFh5oOqRLfwOpzYysEasJ2T8llc"
@@ -84,7 +83,7 @@ def upload_and_process_image(uploaded_file):
         f.write(uploaded_file.getbuffer())
 
     # Extract data using the function from data_extraction.py
-    extracted_data = extract_data_from_image("temp_image.png")
+    extracted_data = extract_data_from_image_v2("temp_image.png")
 
     return extracted_data
 
@@ -223,66 +222,69 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def save_data_to_supabase(dataframe: pd.DataFrame):
-    """Save the edited dataframe back to Supabase."""
-    success_count = 0
-    error_count = 0
-    errors = []
-
+def save_data_to_supabase(dataframe: pd.DataFrame, selected_date=None):
+    """Save extracted data to Supabase with optional date"""
     try:
+        # Use the selected_date parameter if provided, otherwise use today
+        if selected_date is None:
+            selected_date = datetime.now().date()
+
+        # Ensure selected_date is a date object
+        if isinstance(selected_date, datetime):
+            selected_date = selected_date.date()
+
+        # Combine selected date with current time for timestamp
+        selected_datetime = datetime.combine(selected_date, datetime.now().time())
+
+        # Drop 'id' if present
+        if "id" in dataframe.columns:
+            dataframe = dataframe.drop(columns=["id"])
+
+        records_to_insert = []
+
         for _, row in dataframe.iterrows():
-            # Clean and convert data types
-            def safe_convert_to_int(value):
-                """Convert value to int, return None if empty or invalid"""
-                if pd.isna(value) or value == "" or value is None:
-                    return None
-                try:
-                    return int(float(str(value)))  # Handle float strings like "123.0"
-                except (ValueError, TypeError):
-                    return None
+            # Clean and prepare the payment value
+            payment_value = str(row.get('Payment', 0))
+            payment_value = payment_value.replace('Rs.', '').replace('₹', '').replace(',', '').strip()
 
-            def safe_convert_to_string(value):
-                """Convert value to string, return empty string if None/NaN"""
-                if pd.isna(value) or value is None:
-                    return None
-                return str(value)
+            try:
+                payment_amount = int(float(payment_value))
+            except (ValueError, TypeError):
+                payment_amount = 0
 
-            member_data = {
-                "name": safe_convert_to_string(row["Name"]),
-                "payment": safe_convert_to_int(row["Payment"]),
-                "toa": safe_convert_to_string(row["TOA"]),
-                "mode": safe_convert_to_string(row["Mode"]),
-                "created_at": datetime.now().isoformat(),
+            record = {
+                'name': str(row.get('Name', '')).strip(),
+                'toa': str(row.get('TOA', '')).strip(),
+                'payment': payment_amount,
+                'mode': str(row.get('Mode', '')).strip(),
+                'created_at': selected_datetime.isoformat()  # ✅ Use selected date
             }
+            records_to_insert.append(record)
 
-            # Check if record already exists
-            existing = supabase.table("image_data_extraction").select("*").eq("name", member_data["name"]).execute()
+        # Insert all records
+        if records_to_insert:
+            response = supabase.table('image_data_extraction').insert(records_to_insert).execute()
 
-            if existing.data:
-                # Update existing record
-                response = supabase.table("image_data_extraction").update(member_data).eq("name",
-                                                                                          member_data["name"]).execute()
-            else:
-                # Insert new record
-                response = supabase.table("image_data_extraction").insert(member_data).execute()
-
-            # Check if the response contains data (success)
             if response.data:
-                success_count += 1
+                st.success(
+                    f"✅ {len(records_to_insert)} records saved successfully for {selected_date.strftime('%Y-%m-%d')}!")
+
+                # Clear the processed data
+                st.session_state.extracted_data = None
+                st.session_state.data_processed = False
+                st.session_state.image_to_process = None
+
+                time.sleep(1)
+                st.rerun()
             else:
-                error_count += 1
-                errors.append(f"No data returned for {row['Name']}")
-
-        # Show summary message after all operations
-        if success_count > 0:
-            st.success(f"Successfully saved {success_count} member(s) to database!")
-
-        if error_count > 0:
-            st.error(f"Failed to save {error_count} member(s). Errors: {'; '.join(errors)}")
+                st.error("Failed to save records to database")
+        else:
+            st.warning("No valid records to save")
 
     except Exception as e:
-        st.error(f"Database operation failed: {str(e)}")
-
+        st.error(f"Error saving to database: {str(e)}")
+        import traceback
+        st.error(traceback.format_exc())
 
 def debug_supabase_connection():
     """Debug function to test Supabase connection"""
@@ -437,6 +439,7 @@ def get_all_members() -> pd.DataFrame:
 
         df = pd.DataFrame(response.data)
         logger.info(f"Successfully fetched {len(df)} members")
+        print(df.columns)
         return df
 
     except Exception as e:
@@ -649,6 +652,142 @@ def show_error_details(error_message: str):
         """)
 
 
+def process_monthly_payment_data(raw_data, selected_thursdays, weekly_amount):
+    """Process payment data and calculate monthly totals with pending amounts"""
+    try:
+        # Aggregate payments by member name for the entire month
+        member_monthly_totals = {}
+
+        for record in raw_data:
+            name = record.get('name', 'Unknown')
+            payment = record.get('payment', 0)
+
+            # Convert payment to float safely
+            try:
+                payment_amount = float(payment) if payment is not None else 0.0
+            except (ValueError, TypeError):
+                payment_amount = 0.0
+
+            # Sum up all payments for each member
+            if name in member_monthly_totals:
+                member_monthly_totals[name] += payment_amount
+            else:
+                member_monthly_totals[name] = payment_amount
+
+        # Calculate expected amount based on selected Thursdays
+        expected_monthly_amount = len(selected_thursdays) * weekly_amount
+
+        # Create processed data with pending calculations
+        processed_data = []
+        for name, total_paid in member_monthly_totals.items():
+            pending_amount = expected_monthly_amount - total_paid
+
+            processed_data.append({
+                "name": name,
+                "total_paid": total_paid,
+                "expected_amount": expected_monthly_amount,
+                "pending_amount": max(0, pending_amount),  # Don't show negative pending
+                "overpaid_amount": max(0, -pending_amount),  # Show overpayment if any
+                "payment_status": "Complete" if pending_amount <= 0 else "Pending"
+            })
+
+        return processed_data
+
+    except Exception as e:
+        st.error(f"Error processing monthly payment data: {str(e)}")
+        return []
+
+
+def display_monthly_payment_summary(selected_thursdays, weekly_amount):
+    """Display monthly payment summary with totals and pending amounts"""
+    try:
+        if 'individuals_data' not in st.session_state or not st.session_state.individuals_data:
+            st.info("No payment data loaded. Click 'Load Payment Data' to fetch from database.")
+            return
+
+        individuals = st.session_state.individuals_data
+        total_weeks = len(selected_thursdays)
+        expected_total = total_weeks * weekly_amount
+
+        st.write("---")
+        st.write(f"### Monthly Payment Summary for {total_weeks} Thursdays")
+        st.info(f"Expected payment per person: Rs. {expected_total:,.2f}")
+
+        # Create summary table
+        summary_data = []
+        for individual in individuals:
+            name = individual["name"]
+            total_paid = individual["total_paid"]
+            pending = individual["pending_amount"]
+            overpaid = individual["overpaid_amount"]
+
+            if pending == 0 and overpaid == 0:
+                status = "✅ Complete"
+                pending_display = "Rs. 0.00"
+            elif pending > 0:
+                status = f"⚠️ Pending"
+                pending_display = f"Rs. {pending:,.2f}"
+            else:
+                status = f"🔵 Overpaid"
+                pending_display = f"Rs. 0.00 (Overpaid: Rs. {overpaid:,.2f})"
+
+            summary_data.append({
+                "Name": name,
+                "Total Paid": f"Rs. {total_paid:,.2f}",
+                "Expected": f"Rs. {expected_total:,.2f}",
+                "Pending/Status": pending_display,
+                "Status": status
+            })
+
+        df = pd.DataFrame(summary_data)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        # Overall statistics
+        st.write("---")
+        st.write("#### 📈 Overall Statistics")
+
+        col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
+
+        total_expected = len(individuals) * expected_total
+        total_collected = sum([ind["total_paid"] for ind in individuals])
+        total_pending = sum([ind["pending_amount"] for ind in individuals])
+        fully_paid_count = sum([1 for ind in individuals if ind["pending_amount"] == 0])
+
+        with col_stat1:
+            st.write("Total Members", len(individuals))
+        with col_stat2:
+            st.write("Total Expected", f"Rs. {total_expected:,.2f}")
+        with col_stat3:
+            st.write("Total Collected", f"Rs. {total_collected:,.2f}")
+        with col_stat4:
+            st.write("Total Pending", f"Rs. {total_pending:,.2f}")
+
+        # Collection rate
+        #col_rate1, col_rate2 = st.columns(2)
+        #with col_rate1:
+        #    collection_rate = (total_collected / total_expected * 100) if total_expected > 0 else 0
+        #    st.metric("Collection Rate", f"{collection_rate:.1f}%")
+        #with col_rate2:
+        #    st.metric("Fully Paid Members", f"{fully_paid_count}/{len(individuals)}")
+
+        # Progress bar
+        #st.progress(min(collection_rate / 100, 1.0))
+
+        # Export functionality
+        if st.button("📥 Export Monthly Summary to CSV"):
+            csv_data = df.to_csv(index=False)
+            st.download_button(
+                label="Download CSV",
+                data=csv_data,
+                file_name=f"monthly_payment_summary_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+
+    except Exception as e:
+        st.error(f"Error displaying monthly payment summary: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
+
 def show_calendar_widget():
     """Show calendar widget for date selection with amount calculation"""
     try:
@@ -661,6 +800,8 @@ def show_calendar_widget():
             st.session_state.weekly_amount = 1500.0
         if 'calculation_results' not in st.session_state:
             st.session_state.calculation_results = {}
+        if 'calendar_initialized' not in st.session_state:
+            st.session_state.calendar_initialized = False
 
         # Amount input section
         st.write("#### 💰 Amount Configuration")
@@ -681,17 +822,18 @@ def show_calendar_widget():
             st.info("💡 This is the amount each individual pays every Thursday")
 
         st.write("#### 📅 Calendar Navigation")
-        st.write("Select dates (Thursdays will be highlighted):")
+        st.write("Select dates (Thursdays are auto-selected, click to deselect):")
 
         # Date selection controls
         col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
         with col1:
-            year = st.selectbox("Year", range(2020, 2030), index=5)  # Default to 2025
+            year = st.selectbox("Year", range(2020, 2030), index=5, key="calendar_year")  # Default to 2025
         with col2:
-            month = st.selectbox("Month", range(1, 13), index=datetime.now().month - 1)
+            month = st.selectbox("Month", range(1, 13), index=datetime.now().month - 1, key="calendar_month")
         with col3:
             if st.button("Clear All"):
                 st.session_state.selected_dates_calendar.clear()
+                st.session_state.calendar_initialized = False
                 st.rerun()
         with col4:
             if st.button("Select All Thursdays"):
@@ -700,10 +842,24 @@ def show_calendar_widget():
                 st.session_state.selected_dates_calendar.update(thursdays)
                 st.rerun()
 
+        # Auto-select all Thursdays on first load or month/year change
+        thursdays_in_month = get_thursdays_in_month(year, month)
+
+        # Check if month/year changed or first time initialization
+        current_month_key = f"{year}_{month}"
+        if 'last_selected_month' not in st.session_state:
+            st.session_state.last_selected_month = current_month_key
+            st.session_state.selected_dates_calendar.update(thursdays_in_month)
+        elif st.session_state.last_selected_month != current_month_key:
+            # Month/year changed - auto-select new month's Thursdays
+            st.session_state.last_selected_month = current_month_key
+            # Clear previous selections and add new month's Thursdays
+            st.session_state.selected_dates_calendar = set(thursdays_in_month)
+            st.rerun()
+
         # Create calendar grid
         cal = calendar.monthcalendar(year, month)
         month_name = calendar.month_name[month]
-        thursdays_in_month = get_thursdays_in_month(year, month)
 
         st.subheader(f"{month_name} {year}")
 
@@ -785,7 +941,6 @@ def show_calendar_widget():
             sorted_dates = sorted(list(st.session_state.selected_dates_calendar))
             selected_thursdays = [d for d in sorted_dates if d.weekday() == 3]
 
-            # FIXED: Proper Supabase data loading with resolved variables
             col_load1, col_load2 = st.columns([1, 2])
 
             with col_load1:
@@ -796,35 +951,37 @@ def show_calendar_widget():
                             supabase = init_supabase()
 
                             if supabase and selected_thursdays:
-                                # FIXED: Get selected_year and selected_month from selected thursdays
+                                # Get selected_year and selected_month from selected thursdays
                                 selected_year = selected_thursdays[0].year
                                 selected_month = selected_thursdays[0].month
                                 month_name_selected = calendar.month_name[selected_month]
 
-                                # Creates date range for the selected month only
-                                start_date = f"{selected_year}-{selected_month:02d}-01"  # e.g., "2024-08-01"
+                                # Create date range for the selected month only
+                                start_date = f"{selected_year}-{selected_month:02d}-01"
                                 if selected_month == 12:
-                                    end_date = f"{selected_year + 1}-01-01"  # Handle December
+                                    end_date = f"{selected_year + 1}-01-01"
                                 else:
-                                    end_date = f"{selected_year}-{selected_month + 1:02d}-01"  # e.g., "2024-09-01"
+                                    end_date = f"{selected_year}-{selected_month + 1:02d}-01"
 
-                                st.info(f"🔍 Filtering data for: **{month_name_selected} {selected_year}**")
+                               # st.info(f"🔍 Filtering data for: **{month_name_selected} {selected_year}**")
 
-                                # Filters records by created_at timestamp
+                                # Filter records by created_at timestamp
                                 response = supabase.table('image_data_extraction') \
                                     .select('name, payment, created_at') \
                                     .gte('created_at', start_date) \
                                     .lt('created_at', end_date) \
                                     .execute()
 
-                                # FIXED: Properly handle the response
                                 if response.data:
-                                    # Process the data
-                                    payment_data = process_supabase_data_with_created_at(response.data,
-                                                                                         selected_thursdays)
+                                    # Process the data with monthly aggregation
+                                    payment_data = process_monthly_payment_data(
+                                        response.data,
+                                        selected_thursdays,
+                                        weekly_amount
+                                    )
                                     st.session_state.individuals_data = payment_data
-                                    st.success(
-                                        f"✅ Loaded {month_name_selected} {selected_year} data for {len(payment_data)} individuals")
+                                    #st.success(
+                                    #    f"✅ Loaded {month_name_selected} {selected_year} data for {len(payment_data)} individuals")
                                     st.info(
                                         f"📊 Found {len(response.data)} total records for {month_name_selected} {selected_year}")
                                 else:
@@ -839,22 +996,20 @@ def show_calendar_widget():
                             st.error(f"❌ Error loading data: {str(e)}")
 
             with col_load2:
-                st.info("💡 This will fetch data ONLY for the selected month using created_at timestamp")
+                #st.info("💡 This will fetch data ONLY for the selected month using created_at timestamp")
                 if selected_thursdays:
                     selected_month_name = calendar.month_name[selected_thursdays[0].month]
                     selected_year_display = selected_thursdays[0].year
-                    st.caption(f"📅 Will filter for: **{selected_month_name} {selected_year_display}**")
+                    #st.caption(f"📅 Will filter for: **{selected_month_name} {selected_year_display}**")
 
             # Display payment summary if data is loaded
             if 'individuals_data' in st.session_state and st.session_state.individuals_data:
-                display_payment_summary(selected_thursdays, weekly_amount)
+                display_monthly_payment_summary(selected_thursdays, weekly_amount)
 
     except Exception as e:
         st.error(f"Calendar widget error: {str(e)}")
-        # More detailed error information for debugging
         import traceback
         st.code(traceback.format_exc())
-
 
 def get_thursdays_in_month(year, month):
     """Get all Thursdays in a given month"""
@@ -1091,23 +1246,6 @@ def display_payment_summary(selected_thursdays, weekly_amount):
         st.error(f"Error displaying payment summary: {str(e)}")
 
 
-# Solution 1: Main app structure with sidebar
-# def main():
-# """Main application entry point"""
-# Configure page
-# st.set_page_config(
-# page_title="BNI Brilliance",
-# page_icon="🏢",
-# layout="wide",
-# initial_sidebar_state="expanded"  # Force sidebar to be expanded
-# )
-
-# Always show sidebar first
-# show_sidebar()
-
-# Then show dashboard
-# show_dashboard()
-# Solution 2: Force sidebar visibility in show_sidebar function
 
 @handle_error
 def get_available_dates_from_db(year: int, month: int) -> list:
@@ -1208,7 +1346,7 @@ def get_members_by_date(selected_date) -> pd.DataFrame:
 
 def show_view_records():
     """Show view records interface with date filtering"""
-    st.header("👀 View Records by Date")
+    st.header("View Records by Date")
 
     # Back button
     col1, col2 = st.columns([3, 1])
@@ -1258,7 +1396,7 @@ def show_view_records():
 
     # Show date selection dropdown if dates are available
     if 'available_dates' in st.session_state and st.session_state.available_dates:
-        st.write("---")
+        #st.write("---")
         st.write(f"**Available dates in {st.session_state.get('selected_month_year', 'Selected Month')}:**")
 
         # Date selection dropdown
@@ -1291,7 +1429,7 @@ def show_view_records():
 
 
 def show_filtered_members_list(df):
-    """Display members list for filtered data (similar to show_members_list but with filtered data)"""
+    """Display members list in editable table format"""
     try:
         if df is None or df.empty:
             st.info("No records found for the selected date.")
@@ -1304,92 +1442,176 @@ def show_filtered_members_list(df):
         with col1:
             st.metric("Total Members", stats['total_members'])
         with col2:
-            st.metric("Total Payment", f"₹{stats['total_payment']:,.2f}")
-        with col3:
-            if stats['total_members'] > 0:
-                avg_payment = stats['total_payment'] / stats['total_members']
-                st.metric("Average Payment", f"₹{avg_payment:,.2f}")
-
-        # Show table headers
-        st.markdown("---")
-        col1, col2, col3, col4, col5, col6 = st.columns([2, 1.5, 1, 1, 1.5, 1])
-
-        with col1:
-            st.markdown("**Name**")
-        with col2:
-            st.markdown("**TOA**")
-        with col3:
-            st.markdown("**Payment**")
-        with col4:
-            st.markdown("**Mode**")
-        with col5:
-            st.markdown("**Created**")
-        with col6:
-            st.markdown("**Actions**")
+            st.metric("Total Payment", f"Rs. {stats['total_payment']:,.2f}")
 
         st.markdown("---")
+        st.subheader("Edit Records")
+        st.info("You can edit multiple records directly in the table below. Click 'Save All Changes' when done.")
 
-        # Show table with error boundaries for each row
-        for idx, row in df.iterrows():
-            try:
-                with st.container():
-                    col1, col2, col3, col4, col5, col6 = st.columns([2, 1.5, 1, 1, 1.5, 1])
+        # Prepare dataframe for editing
+        edit_df = df.copy()
 
-                    with col1:
-                        st.write(f"**{row.get('name', 'Unknown')}**")
-                        st.caption(f"ID: {row.get('id', 'Unknown')}")
+        # Format payment for display
+        if 'payment' in edit_df.columns:
+            edit_df['payment'] = edit_df['payment'].apply(
+                lambda x: float(x) if pd.notnull(x) else 0.0
+            )
 
-                    with col2:
-                        st.write(row.get('toa', 'Not specified'))
+        # Format created_at for display
+        if 'created_at' in edit_df.columns:
+            edit_df['created_at_display'] = pd.to_datetime(
+                edit_df['created_at'], errors='coerce'
+            ).dt.strftime('%Y-%m-%d %H:%M:%S')
 
-                    with col3:
-                        payment_val = row.get('payment', 0)
-                        try:
-                            st.write(f"₹{float(payment_val):,.2f}")
-                        except (ValueError, TypeError):
-                            st.write("₹0.00")
+        # Select and reorder columns for display
+        display_columns = ['id', 'name', 'toa', 'payment', 'mode']
+        available_columns = [col for col in display_columns if col in edit_df.columns]
 
-                    with col4:
-                        st.write(row.get('mode', 'Unknown'))
+        edit_df_display = edit_df[available_columns].copy()
 
-                    with col5:
-                        created_at = row.get('created_at', '')
-                        if created_at:
-                            try:
-                                # Parse and format the date
-                                parsed_date = pd.to_datetime(created_at)
-                                st.write(parsed_date.strftime('%Y-%m-%d'))
-                                st.caption(parsed_date.strftime('%H:%M:%S'))
-                            except:
-                                st.write(str(created_at)[:10])  # Show first 10 characters
+        # Rename columns for better display
+        column_config = {
+            'id': st.column_config.NumberColumn('ID', disabled=True, help="Record ID (cannot be edited)"),
+            'name': st.column_config.TextColumn('Name', required=True, max_chars=100),
+            'toa': st.column_config.TextColumn('Time of Arrival', max_chars=50),
+            'payment': st.column_config.NumberColumn('Payment (Rs.)', required=True, min_value=0, format="%.2f"),
+            'mode': st.column_config.TextColumn('Mode', max_chars=50),
+            'created_at_display': st.column_config.TextColumn('Created At', disabled=True,
+                                                              help="Creation date (cannot be edited)")
+        }
+
+        # Add checkbox column for selection
+        edit_df_display.insert(0, 'Select', False)
+
+        # Update column config to include checkbox
+        column_config['Select'] = st.column_config.CheckboxColumn(
+            'Select',
+            help="Check to select for deletion",
+            default=False
+        )
+
+        # Show editable dataframe
+        edited_df = st.data_editor(
+            edit_df_display,
+            use_container_width=True,
+            num_rows="fixed",
+            column_config=column_config,
+            hide_index=True,
+            key="filtered_members_editor"
+        )
+
+        st.markdown("---")
+
+        # Action buttons
+        col_save, col_delete, col_cancel = st.columns([1, 1, 2])
+
+        with col_save:
+            if st.button("💾 Save All Changes", type="primary", use_container_width=True):
+                with st.spinner("Saving changes..."):
+                    try:
+                        success_count = 0
+                        error_count = 0
+
+                        # Compare original and edited dataframes
+                        for idx in range(len(edited_df)):
+                            original_row = edit_df_display.iloc[idx]
+                            edited_row = edited_df.iloc[idx]
+
+                            # Check if any changes were made
+                            if not original_row.equals(edited_row):
+                                record_id = int(edited_row['id'])
+
+                                # Prepare update data
+                                update_data = {
+                                    'name': str(edited_row['name']).strip(),
+                                    'toa': str(edited_row['toa']).strip() if pd.notnull(edited_row['toa']) else '',
+                                    'payment': int(edited_row['payment']),
+                                    'mode': str(edited_row['mode']).strip() if pd.notnull(edited_row['mode']) else '',
+                                }
+
+                                # Update in database
+                                response = supabase.table('image_data_extraction').update(update_data).eq('id',
+                                                                                                          record_id).execute()
+
+                                if response.data:
+                                    success_count += 1
+                                else:
+                                    error_count += 1
+
+                        if success_count > 0:
+                            st.success(f"Successfully updated {success_count} record(s)!")
+                            time.sleep(1)
+                            st.rerun()
+                        elif error_count > 0:
+                            st.error(f"Failed to update {error_count} record(s)")
                         else:
-                            st.write("Unknown")
+                            st.info("No changes detected")
 
-                    with col6:
-                        col_edit, col_delete = st.columns(2)
+                    except Exception as e:
+                        st.error(f"Error saving changes: {str(e)}")
+                        import traceback
+                        st.error(traceback.format_exc())
 
-                        with col_edit:
-                            if st.button("✏️", key=f"edit_filtered_{row['id']}", help="Edit member"):
-                                st.session_state.edit_member = row.to_dict()
-                                st.session_state.show_view_records = False  # Hide view records
+        with col_delete:
+            # Count selected rows
+            selected_rows = edited_df[edited_df['Select'] == True]
+            num_selected = len(selected_rows)
+
+            if num_selected > 0:
+                st.warning(f"⚠️ {num_selected} record(s) selected for deletion")
+
+                if st.button(f"🗑️ Delete {num_selected} Selected", type="secondary", use_container_width=True):
+                    with st.spinner(f"Deleting {num_selected} record(s)..."):
+                        try:
+                            deleted_count = 0
+                            failed_count = 0
+
+                            for _, row in selected_rows.iterrows():
+                                record_id = int(row['id'])
+                                record_name = row['name']
+                                try:
+                                    # Delete from database
+                                    response = supabase.table('image_data_extraction').delete().eq('id',
+                                                                                                   record_id).execute()
+
+                                    # Check if delete was successful
+                                    if response.data and len(response.data) > 0:
+                                        deleted_count += 1
+                                    else:
+                                        failed_count += 1
+                                        st.warning(f"Failed to delete {record_name} (ID: {record_id})")
+                                except Exception as delete_error:
+                                    failed_count += 1
+                                    st.error(f"Error deleting {record_name}: {str(delete_error)}")
+
+                            # Show results
+                            if deleted_count > 0:
+                                st.success(f"✅ Successfully deleted {deleted_count} record(s)!")
+                                if failed_count > 0:
+                                    st.warning(f"⚠️ Failed to delete {failed_count} record(s)")
+                                time.sleep(1.5)
                                 st.rerun()
+                            else:
+                                st.error("❌ Failed to delete any records")
 
-                        with col_delete:
-                            if st.button("🗑️", key=f"delete_filtered_{row['id']}", help="Delete member"):
-                                st.session_state.delete_confirmation = row.to_dict()
-                                st.rerun()
+                        except Exception as e:
+                            st.error(f"Error during deletion: {str(e)}")
+                            import traceback
+                            st.error(traceback.format_exc())
+            else:
+                st.info("Select rows using the checkbox column to delete")
+                st.button("🗑️ Delete Selected", disabled=True, use_container_width=True)
 
-                    st.divider()
-
-            except Exception as e:
-                st.error(f"Error displaying member row: {str(e)}")
-                logger.error(f"Row display error for member {row.get('id', 'unknown')}: {e}")
-                continue
+        with col_cancel:
+            if st.button("↩️ Back to View Records", use_container_width=True):
+                st.session_state.show_view_records = True
+                st.rerun()
 
     except Exception as e:
         st.error("Error displaying filtered members")
         show_error_details(str(e))
-
+        import traceback
+        st.error(traceback.format_exc())
 
 def show_sidebar():
     """Show sidebar with file upload and other options - UPDATED VERSION"""
@@ -1402,7 +1624,7 @@ def show_sidebar():
             if st.session_state.get('error_count', 0) > 0:
                 st.warning(f"⚠️ {st.session_state.error_count} error(s) occurred this session")
 
-            # Image Processing Section
+            # IMAGE PROCESSING SECTION (MOVED FROM show_add_member_form)
             st.header("📂 Image Processing")
 
             # Option selector for upload or capture
@@ -1412,21 +1634,20 @@ def show_sidebar():
                 key="input_method"
             )
 
-            uploaded_file = None
-            captured_image = None
-
             if capture_option == "Upload File":
                 # File upload option
-                uploaded_file = st.file_uploader(
-                    "Upload an image file",
+                uploaded_files = st.file_uploader(
+                    "Upload image file(s)",
                     type=["jpg", "jpeg", "png"],
-                    help="Select an image file from your device"
+                    accept_multiple_files=True,
+                    help="Select one or more image files from your device"
                 )
 
-                if uploaded_file is not None:
-                    st.success("✅ File uploaded!")
-                    # Store in session state for dashboard processing
-                    st.session_state.image_to_process = uploaded_file
+                if uploaded_files:
+                    st.success(f"✅ {len(uploaded_files)} file(s) uploaded!")
+
+                    # Store in session state
+                    st.session_state.image_to_process = uploaded_files
                     st.session_state.image_source = "upload"
 
             else:  # Capture Image
@@ -1449,16 +1670,33 @@ def show_sidebar():
                     with st.spinner("Processing..."):
                         try:
                             # Process the image and extract the data
-                            extracted_data = upload_and_process_image(st.session_state.image_to_process)
+                            all_data = []
 
-                            # Store extracted data in session state
-                            if isinstance(extracted_data, list):
-                                extracted_data = pd.DataFrame(extracted_data)
+                            # Process single or multiple images
+                            images_to_process = st.session_state.image_to_process
+                            if not isinstance(images_to_process, list):
+                                images_to_process = [images_to_process]
 
-                            st.session_state.extracted_data = extracted_data
-                            st.session_state.data_processed = True
-                            st.success("✅ Data extracted!")
-                            st.rerun()  # Refresh to show data in main area
+                            for img in images_to_process:
+                                try:
+                                    data = upload_and_process_image(img)
+                                    if isinstance(data, pd.DataFrame):
+                                        all_data.append(data)
+                                    elif isinstance(data, list):  # In case it returns list of dicts
+                                        all_data.append(pd.DataFrame(data))
+                                except Exception as e:
+                                    st.warning(
+                                        f"Failed to process {img.name if hasattr(img, 'name') else 'captured image'}: {e}")
+
+                            # Combine all results
+                            if all_data:
+                                combined_data = pd.concat(all_data, ignore_index=True)
+                                st.session_state.extracted_data = combined_data
+                                st.session_state.data_processed = True
+                                st.success("✅ All images processed successfully!")
+                                st.rerun()  # Refresh to show data in main area
+                            else:
+                                st.error("No data extracted from uploaded images.")
 
                         except Exception as e:
                             st.error(f"❌ Processing failed: {str(e)}")
@@ -1476,7 +1714,7 @@ def show_sidebar():
             st.divider()
 
             # Action buttons with error handling
-            if st.button("➕ Add New Member", use_container_width=True, key='sidebar_add_member'):
+            if st.button("➕ Members Meeting Attendance Data", use_container_width=True, key='sidebar_add_member'):
                 st.session_state.show_add_form = True
                 st.session_state.edit_member = None
                 st.session_state.show_view_records = False
@@ -1548,7 +1786,6 @@ def show_sidebar():
     except Exception as e:
         st.sidebar.error(f"Sidebar error: {str(e)}")
         logger.error(f"Sidebar error: {e}")
-
 
 def show_meeting_data():
     """Show meeting data interface with month/year selection and payment tracking"""
@@ -1656,7 +1893,7 @@ def show_meeting_data():
                     st.session_state.meeting_month_records = month_records
                     st.session_state.current_meeting_date = selected_date
 
-                    st.success(f"Loaded meeting data for {selected_date.strftime('%Y-%m-%d')}")
+                    #st.success(f"Loaded meeting data for {selected_date.strftime('%Y-%m-%d')}")
                 except Exception as e:
                     st.error(f"Failed to load meeting data: {str(e)}")
 
@@ -1664,235 +1901,14 @@ def show_meeting_data():
     if ('meeting_date_records' in st.session_state and
             'meeting_month_records' in st.session_state and
             not st.session_state.meeting_date_records.empty):
-        show_meeting_data_analysis()
-
-
-def show_meeting_data_analysis():
-    """Display meeting data analysis with two tables - FIXED VERSION"""
-    try:
-        date_records = st.session_state.meeting_date_records
-        month_records = st.session_state.meeting_month_records
-        selected_date = st.session_state.current_meeting_date
-        weekly_payment = st.session_state.weekly_payment_amount
-        selected_month = st.session_state.meeting_data_selected_month
-        selected_year = st.session_state.meeting_data_selected_year
-
-        st.write("---")
-        st.subheader(f"📊 Meeting Data for {selected_date.strftime('%Y-%m-%d (%A)')}")
-
-        # Enhanced payment conversion function
-        def safe_payment_convert(payment_value):
-            """Safely convert payment value to float with extensive validation"""
-            if payment_value is None:
-                return 0.0
-
-            # Handle pandas NaN
-            if pd.isna(payment_value):
-                return 0.0
-
-            # Convert to string first to handle various input types
-            payment_str = str(payment_value).strip()
-
-            # Handle empty strings
-            if not payment_str or payment_str.lower() in ['nan', 'none', 'null', '']:
-                return 0.0
-
-            # Remove common currency symbols and commas
-            payment_str = payment_str.replace('Rs.', '').replace('₹', '').replace(',', '').strip()
-
-            # Try to convert to float
-            try:
-                result = float(payment_str)
-                # Check if result is NaN
-                if math.isnan(result):
-                    return 0.0
-                return result
-            except (ValueError, TypeError):
-                # If conversion fails, return 0.0
-                st.warning(f"⚠️ Could not convert payment value '{payment_value}' to number, using 0.0")
-                return 0.0
-
-        # Table 1: Records for selected date
-        st.write("#### 📋 Attendance Records for Selected Date")
-        if not date_records.empty:
-            # Create display dataframe for the specific date
-            date_display_data = []
-            total_collected_date = 0.0
-
-            # st.write("Debug: Processing date records...")
-            for idx, row in date_records.iterrows():
-                name = row.get('name', 'Unknown')
-                toa = row.get('toa', 'Not specified')
-                payment_raw = row.get('payment', 0)
-
-                # Debug information
-                # st.write(f"Debug - Row {idx}: name={name}, payment_raw={payment_raw} (type: {type(payment_raw)})")
-
-                # Use enhanced conversion function
-                payment_amount = safe_payment_convert(payment_raw)
-                total_collected_date += payment_amount
-
-                # st.write(f"Debug - Converted payment: {payment_amount}")
-
-                date_display_data.append({
-                    "Name": name,
-                    "Time of Arrival (TOA)": toa,
-                    "Payment": f"Rs. {payment_amount:,.2f}"
-                })
-
-            # Display table
-            date_df = pd.DataFrame(date_display_data)
-            st.dataframe(date_df, use_container_width=True, hide_index=True)
-
-            # Summary for the date
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Members Present", len(date_records))
-            with col2:
-                st.metric("Total Collected", f"Rs. {total_collected_date:,.2f}")
-                # st.write(f"Debug: total_collected_date = {total_collected_date}")
-
-        # Table 2: Monthly summary with pending amounts
-        st.write("#### 💰 Monthly Payment Summary")
-
-        if not month_records.empty:
-            # Calculate Thursdays in the selected month
-            thursdays_in_month = get_thursdays_in_month(selected_year, selected_month)
-            total_weeks = len(thursdays_in_month)
-            expected_monthly_payment = total_weeks * weekly_payment
-
-            st.info(f"📅 {calendar.month_name[selected_month]} {selected_year} has {total_weeks} Thursdays. "
-                    f"Expected payment per person: Rs. {expected_monthly_payment:,.2f}")
-
-            # Group by name and calculate totals
-            monthly_summary = {}
-            # st.write("Debug: Processing monthly records...")
-
-            for idx, row in month_records.iterrows():
-                name = row.get('name', 'Unknown')
-                payment_raw = row.get('payment', 0)
-
-                # Debug information
-                # if idx < 5:  # Only show first 5 for debugging
-                # st.write(f"Debug - Monthly Row {idx}: name={name}, payment_raw={payment_raw} (type: {type(payment_raw)})")
-
-                # Use enhanced conversion function
-                payment_amount = safe_payment_convert(payment_raw)
-
-                # if idx < 5:  # Only show first 5 for debugging
-                # st.write(f"Debug - Monthly converted payment: {payment_amount}")
-
-                if name in monthly_summary:
-                    monthly_summary[name] += payment_amount
-                else:
-                    monthly_summary[name] = payment_amount
-
-            # Create monthly summary table
-            monthly_display_data = []
-            total_collected_month = 0.0
-            total_pending_month = 0.0
-
-            # st.write("Debug: Creating monthly summary...")
-            for name, total_paid in monthly_summary.items():
-                # st.write(f"Debug - {name}: total_paid={total_paid}")
-
-                # Ensure total_paid is not NaN
-                if pd.isna(total_paid) or math.isnan(total_paid):
-                    total_paid = 0.0
-                    st.warning(f"⚠️ Found NaN value for {name}, setting to 0.0")
-
-                pending_amount = expected_monthly_payment - total_paid
-                total_collected_month += total_paid
-                total_pending_month += max(0, pending_amount)
-
-                if pending_amount <= 0:
-                    status = "✅ Complete"
-                    pending_display = "Rs. 0.00"
-                else:
-                    status = f"⚠️ Pending"
-                    pending_display = f"Rs. {pending_amount:,.2f}"
-
-                monthly_display_data.append({
-                    "Name": name,
-                    "Total Payment": f"Rs. {total_paid:,.2f}",
-                    "Pending Amount": pending_display,
-                    "Status": status
-                })
-
-            # st.write(f"Debug: total_collected_month = {total_collected_month}")
-
-            # Display monthly summary table
-            monthly_df = pd.DataFrame(monthly_display_data)
-            st.dataframe(monthly_df, use_container_width=True, hide_index=True)
-
-            # Monthly statistics
-            st.write("#### 📈 Monthly Statistics")
-            col1, col2, col3, col4 = st.columns(4)
-
-            with col1:
-                st.metric("Total Members", len(monthly_summary))
-            with col2:
-                # Ensure total_collected_month is not NaN
-                if pd.isna(total_collected_month) or math.isnan(total_collected_month):
-                    total_collected_month = 0.0
-                st.metric("Total Collected", f"Rs. {total_collected_month:,.2f}")
-            with col3:
-                if pd.isna(total_pending_month) or math.isnan(total_pending_month):
-                    total_pending_month = 0.0
-                st.metric("Total Pending", f"Rs. {total_pending_month:,.2f}")
-            with col4:
-                expected_total = len(monthly_summary) * expected_monthly_payment
-
-            # Export functionality
-            col_export1, col_export2 = st.columns(2)
-
-            with col_export1:
-                if st.button("📥 Export Date Records"):
-                    csv_data = date_df.to_csv(index=False)
-                    st.download_button(
-                        label="Download Date Records CSV",
-                        data=csv_data,
-                        file_name=f"meeting_data_{selected_date.strftime('%Y%m%d')}.csv",
-                        mime="text/csv"
-                    )
-
-            with col_export2:
-                if st.button("📥 Export Monthly Summary"):
-                    csv_data = monthly_df.to_csv(index=False)
-                    st.download_button(
-                        label="Download Monthly Summary CSV",
-                        data=csv_data,
-                        file_name=f"monthly_summary_{selected_year}{selected_month:02d}.csv",
-                        mime="text/csv"
-                    )
-
-    except Exception as e:
-        st.error(f"Error displaying meeting data analysis: {str(e)}")
-        # st.write("Debug info:")
-        st.write(f"Date records shape: {st.session_state.get('meeting_date_records', pd.DataFrame()).shape}")
-        st.write(f"Month records shape: {st.session_state.get('meeting_month_records', pd.DataFrame()).shape}")
-
-        # Additional debug information
-        if 'meeting_date_records' in st.session_state:
-            st.write("Date records columns:", st.session_state.meeting_date_records.columns.tolist())
-            st.write("Sample date records:")
-            st.write(st.session_state.meeting_date_records.head())
-
-        if 'meeting_month_records' in st.session_state:
-            st.write("Month records columns:", st.session_state.meeting_month_records.columns.tolist())
-            st.write("Sample month records:")
-            st.write(st.session_state.meeting_month_records.head())
-
+        show_meeting_data_analysis_clean()
 
 def show_meeting_data_analysis_clean():
-    """Display meeting data analysis with two tables - CLEAN VERSION (no debug output)"""
+    """Display meeting data analysis with weekly summary - CLEAN VERSION"""
     try:
         date_records = st.session_state.meeting_date_records
-        month_records = st.session_state.meeting_month_records
         selected_date = st.session_state.current_meeting_date
         weekly_payment = st.session_state.weekly_payment_amount
-        selected_month = st.session_state.meeting_data_selected_month
-        selected_year = st.session_state.meeting_data_selected_year
 
         st.write("---")
         st.subheader(f"📊 Meeting Data for {selected_date.strftime('%Y-%m-%d (%A)')}")
@@ -1921,66 +1937,22 @@ def show_meeting_data_analysis_clean():
             except (ValueError, TypeError):
                 return 0.0
 
-        # Table 1: Records for selected date
-        st.write("#### 📋 Attendance Records for Selected Date")
+        # Table: Records for selected date with payment status
+        st.write("#### 📋 Attendance & Payment Records for Selected Week")
         if not date_records.empty:
-            date_display_data = []
-            total_collected_date = 0.0
+            weekly_display_data = []
+            total_collected_week = 0.0
+            total_pending_week = 0.0
 
             for _, row in date_records.iterrows():
                 name = row.get('name', 'Unknown')
                 toa = row.get('toa', 'Not specified')
                 payment_amount = safe_payment_convert(row.get('payment', 0))
-                total_collected_date += payment_amount
+                total_collected_week += payment_amount
 
-                date_display_data.append({
-                    "Name": name,
-                    "Time of Arrival (TOA)": toa,
-                    "Payment": f"Rs. {payment_amount:,.2f}"
-                })
-
-            date_df = pd.DataFrame(date_display_data)
-            st.dataframe(date_df, use_container_width=True, hide_index=True)
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Members Present", len(date_records))
-            with col2:
-                st.metric("Total Collected", f"Rs. {total_collected_date:,.2f}")
-
-        # Table 2: Monthly summary with pending amounts
-        st.write("#### 💰 Monthly Payment Summary")
-
-        if not month_records.empty:
-            thursdays_in_month = get_thursdays_in_month(selected_year, selected_month)
-            total_weeks = len(thursdays_in_month)
-            expected_monthly_payment = total_weeks * weekly_payment
-
-            st.info(f"📅 {calendar.month_name[selected_month]} {selected_year} has {total_weeks} Thursdays. "
-                    f"Expected payment per person: Rs. {expected_monthly_payment:,.2f}")
-
-            monthly_summary = {}
-
-            for _, row in month_records.iterrows():
-                name = row.get('name', 'Unknown')
-                payment_amount = safe_payment_convert(row.get('payment', 0))
-
-                if name in monthly_summary:
-                    monthly_summary[name] += payment_amount
-                else:
-                    monthly_summary[name] = payment_amount
-
-            monthly_display_data = []
-            total_collected_month = 0.0
-            total_pending_month = 0.0
-
-            for name, total_paid in monthly_summary.items():
-                if pd.isna(total_paid) or math.isnan(total_paid):
-                    total_paid = 0.0
-
-                pending_amount = expected_monthly_payment - total_paid
-                total_collected_month += total_paid
-                total_pending_month += max(0, pending_amount)
+                # Calculate pending amount for this week
+                pending_amount = weekly_payment - payment_amount
+                total_pending_week += max(0, pending_amount)
 
                 if pending_amount <= 0:
                     status = "✅ Complete"
@@ -1989,67 +1961,46 @@ def show_meeting_data_analysis_clean():
                     status = f"⚠️ Pending"
                     pending_display = f"Rs. {pending_amount:,.2f}"
 
-                monthly_display_data.append({
+                weekly_display_data.append({
                     "Name": name,
-                    "Total Payment": f"Rs. {total_paid:,.2f}",
-                    "Pending Amount": pending_display,
+                    "Time of Arrival (TOA)": toa,
+                    "Payment": f"Rs. {payment_amount:,.2f}",
+                    "Pending": pending_display,
                     "Status": status
                 })
 
-            monthly_df = pd.DataFrame(monthly_display_data)
-            st.dataframe(monthly_df, use_container_width=True, hide_index=True)
+            weekly_df = pd.DataFrame(weekly_display_data)
+            st.dataframe(weekly_df, use_container_width=True, hide_index=True)
 
-            # Monthly statistics
-            st.write("#### 📈 Monthly Statistics")
+            # Weekly statistics
+            st.write("#### 📈 Weekly Summary")
             col1, col2, col3, col4 = st.columns(4)
 
-            if pd.isna(total_collected_month) or math.isnan(total_collected_month):
-                total_collected_month = 0.0
-            if pd.isna(total_pending_month) or math.isnan(total_pending_month):
-                total_pending_month = 0.0
-
             with col1:
-                st.metric("Total Members", len(monthly_summary))
+                st.metric("Members Present", len(date_records))
             with col2:
-                st.metric("Total Collected", f"Rs. {total_collected_month:,.2f}")
+                st.write("Total Collected", f"Rs. {total_collected_week:,.2f}")
             with col3:
-                st.metric("Total Pending", f"Rs. {total_pending_month:,.2f}")
-            with col4:
-                expected_total = len(monthly_summary) * expected_monthly_payment
-                collection_rate = (total_collected_month / expected_total * 100) if expected_total > 0 else 0
-                st.metric("Collection Rate", f"{collection_rate:.1f}%")
+                st.write("Total Pending", f"Rs. {total_pending_week:,.2f}")
 
-            if expected_total > 0:
-                st.progress(collection_rate / 100)
 
             # Export functionality
-            col_export1, col_export2 = st.columns(2)
+            if st.button("📥 Export Weekly Records"):
+                csv_data = weekly_df.to_csv(index=False)
+                st.download_button(
+                    label="Download Weekly Records CSV",
+                    data=csv_data,
+                    file_name=f"weekly_meeting_data_{selected_date.strftime('%Y%m%d')}.csv",
+                    mime="text/csv"
+                )
 
-            with col_export1:
-                if st.button("📥 Export Date Records"):
-                    csv_data = date_df.to_csv(index=False)
-                    st.download_button(
-                        label="Download Date Records CSV",
-                        data=csv_data,
-                        file_name=f"meeting_data_{selected_date.strftime('%Y%m%d')}.csv",
-                        mime="text/csv"
-                    )
-
-            with col_export2:
-                if st.button("📥 Export Monthly Summary"):
-                    csv_data = monthly_df.to_csv(index=False)
-                    st.download_button(
-                        label="Download Monthly Summary CSV",
-                        data=csv_data,
-                        file_name=f"monthly_summary_{selected_year}{selected_month:02d}.csv",
-                        mime="text/csv"
-                    )
+        else:
+            st.info("No records found for the selected date.")
 
     except Exception as e:
         st.error(f"Error displaying meeting data analysis: {str(e)}")
         import traceback
-        st.code(traceback.format_exc())
-
+        st.error(traceback.format_exc())
 
 @handle_error
 def get_members_by_month(year: int, month: int) -> pd.DataFrame:
@@ -2171,7 +2122,7 @@ def show_login():
 # Enhanced dashboard with error monitoring
 def show_dashboard():
     """Main dashboard function - UPDATED VERSION"""
-    st.title("🏢 BNI Brilliance Member Management System")
+    st.title("BNI Brilliance Member Management System")
 
     # Initialize session state variables (add the new one)
     if "show_calendar" not in st.session_state:
@@ -2204,6 +2155,10 @@ def show_dashboard():
     if "data_processed" not in st.session_state:
         st.session_state.data_processed = False
 
+    # Initialize session state for extracted data date selection
+    if 'extracted_data_selected_date' not in st.session_state:
+        st.session_state.extracted_data_selected_date = datetime.now().date()
+
     # Display extracted data section (only if data exists)
     if st.session_state.get('data_processed') and st.session_state.get('extracted_data') is not None:
 
@@ -2216,28 +2171,129 @@ def show_dashboard():
         else:
             st.info("📷 Data extracted from captured image")
 
+        # DATE SELECTION SECTION - NEW
+        st.subheader("📅 Select Date for This Data")
+        st.info("Choose the date for which you want to save this attendance data")
+
+        col_date1, col_date2, col_date3 = st.columns(3)
+
+        with col_date1:
+            selected_year = st.selectbox(
+                "Year",
+                range(datetime.now().year - 2, datetime.now().year + 2),
+                index=2,  # Current year
+                key="extracted_data_year"
+            )
+
+        with col_date2:
+            selected_month = st.selectbox(
+                "Month",
+                range(1, 13),
+                format_func=lambda x: calendar.month_name[x],
+                index=datetime.now().month - 1,  # Current month
+                key="extracted_data_month"
+            )
+
+        with col_date3:
+            # Get number of days in selected month
+            days_in_month = calendar.monthrange(selected_year, selected_month)[1]
+            selected_day = st.selectbox(
+                "Day",
+                range(1, days_in_month + 1),
+                index=min(datetime.now().day - 1, days_in_month - 1),  # Current day or last day of month
+                key="extracted_data_day"
+            )
+
+        # Construct the selected date
+        selected_date1 = date(selected_year, selected_month, selected_day)
+        st.session_state.extracted_data_selected_date = selected_date1
+
+        # Display selected date prominently
+        st.success(f"📌 Data will be saved for: **{selected_date1.strftime('%A, %B %d, %Y')}**")
+
+        st.divider()
+
         extracted_data = st.session_state.extracted_data
 
         # Ensure extracted_data is a pandas DataFrame
         if isinstance(extracted_data, list):
             extracted_data = pd.DataFrame(extracted_data)
 
-        # Display extracted data as a dataframe and allow editing
-        edited_data = extracted_data.copy()
+        # Remove 'id' column if it exists
+        if "id" in extracted_data.columns:
+            extracted_data = extracted_data.drop(columns=["id"])
 
-        for idx, row in edited_data.iterrows():
-            st.subheader(f"Editing Row {idx + 1}")
-            edited_data.at[idx, "Name"] = st.text_input(f"Name", value=row["Name"], key=f"name_{idx}")
-            edited_data.at[idx, "TOA"] = st.text_input(f"TOA", value=row["TOA"], key=f"toa_{idx}")
-            edited_data.at[idx, "Payment"] = st.text_input(f"Payment", value=str(row["Payment"]), key=f"payment_{idx}")
-            edited_data.at[idx, "Mode"] = st.text_input(f"Mode", value=row["Mode"], key=f"mode_{idx}")
+        # Display editable dataframe using st.data_editor
+        st.write("Edit the data below before saving to database:")
 
-        # Display the editable table as a dataframe (not editable directly)
-        st.dataframe(edited_data)
+        edited_data = st.data_editor(
+            extracted_data,
+            num_rows="dynamic",  # Allows adding/deleting rows
+            use_container_width=True,
+            hide_index=False,
+            column_config={
+                "Name": st.column_config.TextColumn(
+                    "Name",
+                    help="Member name",
+                    max_chars=100,
+                    required=True
+                ),
+                "TOA": st.column_config.TextColumn(
+                    "TOA (Type of Activity)",
+                    help="Type of activity",
+                    max_chars=50
+                ),
+                "Payment": st.column_config.TextColumn(
+                    "Payment",
+                    help="Payment amount or status",
+                    max_chars=50
+                ),
+                "Mode": st.column_config.TextColumn(
+                    "Mode",
+                    help="Payment mode",
+                    max_chars=50
+                )
+            },
+            key="extracted_data_editor"
+        )
 
-        # Save the edited data back to Supabase
-        if st.button("Save to Database", key="save_extracted_data"):
-            save_data_to_supabase(edited_data)
+        # Action buttons
+        col1, col2, col3,col4 = st.columns([2, 2, 2,2])
+
+        with col1:
+            if st.button("💾 Save to Database", type="primary", key="save_extracted_data"):
+                if edited_data is not None and len(edited_data) > 0:
+                    with st.spinner(f"Saving data to database for {selected_date1.strftime('%Y-%m-%d')}..."):
+                        # Pass the selected date to the save function
+                        save_data_to_supabase(edited_data, selected_date=selected_date1)
+                        st.success(f"✅ Data saved successfully for {selected_date1.strftime('%Y-%m-%d')}!")
+                        # Clear the extracted data after saving
+                        st.session_state.extracted_data = None
+                        st.session_state.data_processed = False
+                        time.sleep(1)
+                        st.rerun()
+                else:
+                    st.warning("⚠️ No data to save!")
+
+        with col2:
+            if st.button("🗑️ Clear Data", key="clear_extracted_data"):
+                st.session_state.extracted_data = None
+                st.session_state.data_processed = False
+                st.rerun()
+
+        with col3:
+            if st.button("🏠 Back to Dashboard", key="back_to_dashboard_from_extracted"):
+                st.session_state.extracted_data = None
+                st.session_state.data_processed = False
+                st.session_state.show_calendar = False
+                st.session_state.show_add_form = False
+                st.session_state.show_view_records = False
+                st.session_state.show_meeting_data = False
+                st.session_state.edit_member = None
+                st.rerun()
+
+        with col4:
+            st.caption(f"Total rows: {len(edited_data)}")
 
     # Handle delete confirmation with error handling
     if st.session_state.delete_confirmation:
@@ -2311,8 +2367,26 @@ def show_dashboard_with_sidebar():
     show_dashboard()
 
 
+@handle_error
+def get_member_names_from_personal_details():
+    """Fetch all member names from bni_member_personal_details table"""
+    try:
+        response = supabase.table('bni_member_personal_details').select('name').execute()
+
+        if response.data:
+            # Extract names and remove duplicates
+            names = sorted(list(set([record['name'] for record in response.data if record.get('name')])))
+            return names
+        else:
+            return []
+    except Exception as e:
+        logger.error(f"Failed to fetch member names: {e}")
+        st.warning("Could not load member names from database")
+        return []
+
+
 def show_add_member_form():
-    st.header("➕ Add New Member")
+    st.header("➕ Add Members Meeting Attendance Data")
 
     col1, col2 = st.columns([3, 1])
 
@@ -2321,29 +2395,118 @@ def show_add_member_form():
             st.session_state.show_add_form = False
             st.rerun()
 
+    # Initialize session state for selected date if not exists
+    if 'add_member_selected_date' not in st.session_state:
+        st.session_state.add_member_selected_date = datetime.now().date()
+
+    # Date selection section at the top
+    st.subheader("Select Date for Adding Record")
+    st.info("Choose the date for which you want to add attendance data")
+
+    col_date1, col_date2, col_date3 = st.columns(3)
+
+    with col_date1:
+        selected_year = st.selectbox(
+            "Year",
+            range(datetime.now().year - 2, datetime.now().year + 2),
+            index=2,  # Current year
+            key="add_member_year"
+        )
+
+    with col_date2:
+        selected_month = st.selectbox(
+            "Month",
+            range(1, 13),
+            format_func=lambda x: calendar.month_name[x],
+            index=datetime.now().month - 1,  # Current month
+            key="add_member_month"
+        )
+
+    with col_date3:
+        # Get number of days in selected month
+        days_in_month = calendar.monthrange(selected_year, selected_month)[1]
+        selected_day = st.selectbox(
+            "Day",
+            range(1, days_in_month + 1),
+            index=min(datetime.now().day - 1, days_in_month - 1),  # Current day or last day of month
+            key="add_member_day"
+        )
+
+    # Construct the selected date
+    selected_date = date(selected_year, selected_month, selected_day)
+
+    # Display selected date prominently
+    st.success(f"Adding data for: **{selected_date.strftime('%A, %B %d, %Y')}**")
+
+    # NOTE: Image processing section has been moved to sidebar
+    # Users can now upload/capture images from the sidebar at any time
+
+    # Fetch member names from database
+    member_names_list = get_member_names_from_personal_details()
+
+    # Member details form
     with st.form("add_member_form"):
         col1, col2 = st.columns(2)
 
         with col1:
-            name = st.text_input("Full Name*", placeholder="Enter member's full name")
-            toa = st.text_input("Terms of Visit (TOA)", placeholder="enter the time of attending")
+            # Selectbox with all member names
+            if member_names_list:
+                name = st.selectbox(
+                    "Full Name*",
+                    options=[""] + member_names_list,  # Empty option at start for validation
+                    help="Select a member name from the list"
+                )
+            else:
+                st.warning("No members found in personal details table. Please add members first.")
+                name = ""
+
+            toa = st.text_input("Time of Arrival (TOA)", placeholder="e.g., 10:30 AM")
 
         with col2:
-            mode = st.text_input("Mode", placeholder="e.g., Cash, Online, Cheque")  # ADD THIS LINE
-            payment = st.number_input("Payment Amount*", min_value=100, step=100,
-                                      help="Must be greater than 0")
+            mode = st.text_input("Mode", placeholder="e.g., Cash, Online, Cheque")
+            payment = st.number_input(
+                "Payment Amount*",
+                min_value=0,
+                step=100,
+                help="Enter the payment amount"
+            )
 
-        submitted = st.form_submit_button("Add Member", use_container_width=True)
+        submitted = st.form_submit_button("Add Attendance Details", use_container_width=True)
 
         if submitted:
-            with st.spinner("Adding member..."):
-                result = add_member(name, toa, payment, mode)  # Now mode is defined
-                if result:
-                    st.success(f"✅ Member '{name}' added successfully!")
-                    time.sleep(1)
-                    st.session_state.show_add_form = False
-                    st.rerun()
+            # Validate inputs
+            if not name or name.strip() == "":
+                st.error("Please select a member name")
+            elif payment < 0:
+                st.error("Payment amount cannot be negative")
+            else:
+                with st.spinner("Adding attendance details..."):
+                    # Combine selected date with current time for timestamp
+                    selected_datetime = datetime.combine(selected_date, datetime.now().time())
 
+                    # Create member data with the selected date
+                    member_data = {
+                        'name': name.strip(),
+                        'toa': toa.strip() if toa else '',
+                        'payment': int(payment),
+                        'mode': mode.strip(),
+                        'created_at': selected_datetime.isoformat()
+                    }
+
+                    try:
+                        # Insert into database
+                        response = supabase.table('image_data_extraction').insert(member_data).execute()
+
+                        if response.data:
+                            st.success(
+                                f"✅ Member '{name}' added successfully for {selected_date.strftime('%Y-%m-%d')}!")
+                            time.sleep(1)
+                            st.session_state.show_add_form = False
+                            st.rerun()
+                        else:
+                            st.error("Failed to add member. Please try again.")
+                    except Exception as e:
+                        st.error(f"Database error: {str(e)}")
 
 def show_edit_member_form():
     member_data = st.session_state.edit_member
@@ -2594,14 +2757,12 @@ def main():
                 try:
                     reset_admin_password()
                 except:
+                    st.error("Could not set admin account")
                     st.error("Could not reset admin account")
 
 
 if __name__ == "__main__":
     main()
     init_session_state()
-
-
-
-
+    st.code(traceback.format_exc())
 
