@@ -1,10 +1,24 @@
-from paddleocr import PaddleOCR
 import pandas as pd
 import numpy as np
-import cv2
 import os, re
 from collections import defaultdict
+from sklearn.cluster import DBSCAN
+from datetime import datetime
+import warnings
+from paddleocr import PaddleOCR
+import cv2
 import tempfile
+from difflib import SequenceMatcher
+import tempfile
+
+warnings.filterwarnings("ignore")
+
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["FLAGS_use_mkldnn"] = "0"
+
+
 
 # ========= CONFIG =========
 COLUMNS = ['Name', 'Payment', 'TOA', 'Mode']  # Only 4 columns as requested
