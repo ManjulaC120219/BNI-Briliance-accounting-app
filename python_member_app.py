@@ -1,13 +1,14 @@
 import streamlit as st
 
 # Configure Streamlit page
+'''
 st.set_page_config(
     page_title="BNI Brilliance Member Management",
     page_icon="👥",
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
+'''
 import pandas as pd
 import math
 from supabase import create_client, Client
@@ -27,6 +28,16 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from Final_bni_data_extraction import extract_data_from_image_v2
+
+def show_back_to_main_button():
+    """Show back to main dashboard button"""
+    col1, col2 = st.columns([4, 1])
+    with col2:
+        if st.button("⬅️ Back to Main", key="back_to_main_member_app", use_container_width=True):
+            st.session_state.selected_app = None
+            st.session_state.logged_in = True
+            st.rerun()
+
 
 # Supabase configuration
 supabase_url = st.secrets["SUPABASE_URL"]
@@ -805,7 +816,6 @@ def show_calendar_widget():
             st.session_state.calendar_initialized = False
 
         # Amount input section
-        st.write("#### 💰 Amount Configuration")
         col_amount, col_info = st.columns([1, 2])
 
         with col_amount:
@@ -822,7 +832,6 @@ def show_calendar_widget():
         with col_info:
             st.info("💡 This is the amount each individual pays every Thursday")
 
-        st.write("#### 📅 Calendar Navigation")
         st.write("Select dates (Thursdays are auto-selected, click to deselect):")
 
         # Date selection controls
@@ -2703,35 +2712,35 @@ def show_members_list():
                 st.rerun()
 
 
-# if __name__ == "__main__":
-# show_dashboard_with_sidebar()
-
-# Example usage - you would call this function in your Streamlit app
-# if __name__ == "__main__":
-# show_calendar_widget()
-
-# Main application with login flow
 def main():
+    """Main application entry point - works as module or standalone"""
     try:
+        # Show back button if running as module
+        if 'selected_app' in st.session_state and st.session_state.selected_app == 'member':
+            show_back_to_main_button()
+
         # Initialize session state
         init_session_state()
 
         # Global error recovery check
         if st.session_state.get('error_count', 0) > 5:
             st.error("🚨 Multiple errors detected. Resetting application state...")
-            if st.button("🔄 Reset Application", key="17"):
+            if st.button("🔄 Reset Application", key="reset_app_member"):
                 for key in list(st.session_state.keys()):
                     del st.session_state[key]
                 st.rerun()
             return
 
-        # Check login status and show appropriate interface
-        if not st.session_state.get('logged_in', False):
-            # Show login page only
-            show_login()
-        else:
-            # Show dashboard with sidebar after successful login
+        # Check if running as module (from main app)
+        if 'selected_app' in st.session_state and st.session_state.selected_app == 'member':
+            # Skip login, go straight to dashboard
             show_dashboard_with_sidebar()
+        else:
+            # Running standalone - check login
+            if not st.session_state.get('logged_in', False):
+                show_login()
+            else:
+                show_dashboard_with_sidebar()
 
     except Exception as e:
         st.error("🚨 Critical application error occurred")
@@ -2747,26 +2756,29 @@ def main():
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            if st.button("🔄 Refresh Page", key="18"):
+            if st.button("🔄 Refresh Page", key="refresh_member"):
                 st.rerun()
 
         with col2:
-            if st.button("🧹 Clear Session", key="19"):
+            if st.button("🧹 Clear Session", key="clear_session_member"):
                 for key in list(st.session_state.keys()):
                     del st.session_state[key]
                 st.rerun()
 
         with col3:
-            if st.button("🔧 Reset Admin", key="20"):
-                try:
-                    reset_admin_password()
-                except:
-                    st.error("Could not set admin account")
-                    st.error("Could not reset admin account")
+            if st.button("🏠 Back to Main", key="error_back_member"):
+                st.session_state.selected_app = None
+                st.session_state.logged_in = True
+                st.rerun()
 
 
+# 4. FIND the if __name__ == "__main__" block at the bottom and REPLACE it with:
 if __name__ == "__main__":
+    # Only configure page when running standalone
+    st.set_page_config(
+        page_title="BNI Brilliance Member Management",
+        page_icon="👥",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
     main()
-    #init_session_state()
-    #st.code(traceback.format_exc())
-

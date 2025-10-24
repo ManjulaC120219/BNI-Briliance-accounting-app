@@ -226,6 +226,12 @@ def show_dashboard():
     """Display main dashboard with two app options"""
 
     # Header
+    st.markdown("""
+    <div style="text-align: center; padding: 2rem 0 1rem 0;">
+        <h1>🏢 BNI Brilliance Management System</h1>
+        
+    </div>
+    """, unsafe_allow_html=True)
 
     # Logout button at top right
     col1, col2, col3 = st.columns([4, 1, 1])
@@ -238,9 +244,9 @@ def show_dashboard():
     col1, col2, col3 = st.columns([1, 1, 1])
 
     with col2:
-    # Two big buttons for app selection
+        # Two big buttons for app selection
         st.markdown("<div style='text-align: center;'>", unsafe_allow_html=True)
-        if st.button("Member Attendance", key="member_btn",  type="primary"):
+        if st.button("Member Attendance", key="member_btn", type="primary"):
             st.session_state.selected_app = "member"
             st.rerun()
 
@@ -248,6 +254,81 @@ def show_dashboard():
             st.session_state.selected_app = "visitor"
             st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
+
+def run_member_app():
+    """Run member app with error handling"""
+    try:
+        # Import at the time of use
+        import python_member_app
+
+        # Check if main function exists
+        if hasattr(python_member_app, 'main'):
+            python_member_app.main()
+        else:
+            # Fallback: try to run the app directly
+            if hasattr(python_member_app, 'show_dashboard_with_sidebar'):
+                # Add back button
+                col1, col2 = st.columns([4, 1])
+                with col2:
+                    if st.button("⬅️ Back to Main", key="back_to_main_member"):
+                        st.session_state.selected_app = None
+                        st.rerun()
+
+                # Initialize and run
+                python_member_app.init_session_state()
+                python_member_app.show_dashboard_with_sidebar()
+            else:
+                st.error("❌ Member app module not properly configured")
+                st.info("Please ensure python_member_app.py has a main() function")
+                if st.button("🏠 Back to Dashboard"):
+                    st.session_state.selected_app = None
+                    st.rerun()
+    except Exception as e:
+        st.error(f"❌ Error loading member app: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
+        if st.button("🏠 Back to Dashboard"):
+            st.session_state.selected_app = None
+            st.rerun()
+
+
+def run_visitor_app():
+    """Run visitor app with error handling"""
+    try:
+        # Import at the time of use
+        import BNI_Visitors_Records
+
+        # Check if main function exists
+        if hasattr(BNI_Visitors_Records, 'main'):
+            BNI_Visitors_Records.main()
+        else:
+            # Fallback: try to run the app directly
+            if hasattr(BNI_Visitors_Records, 'show_dashboard_with_sidebar'):
+                # Add back button
+                col1, col2 = st.columns([4, 1])
+                with col2:
+                    if st.button("⬅️ Back to Main", key="back_to_main_visitor"):
+                        st.session_state.selected_app = None
+                        st.rerun()
+
+                # Initialize and run
+                BNI_Visitors_Records.init_session_state()
+                BNI_Visitors_Records.show_dashboard_with_sidebar()
+            else:
+                st.error("❌ Visitor app module not properly configured")
+                st.info("Please ensure BNI_Visitors_Records.py has a main() function")
+                if st.button("🏠 Back to Dashboard"):
+                    st.session_state.selected_app = None
+                    st.rerun()
+    except Exception as e:
+        st.error(f"❌ Error loading visitor app: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
+        if st.button("🏠 Back to Dashboard"):
+            st.session_state.selected_app = None
+            st.rerun()
+
+
 def main():
     """Main application entry point"""
     init_session_state()
@@ -255,13 +336,9 @@ def main():
     if not st.session_state.logged_in:
         show_login()
     elif st.session_state.selected_app == "member":
-        # Import and run member app
-        import python_member_app
-        python_member_app.main()
+        run_member_app()
     elif st.session_state.selected_app == "visitor":
-        # Import and run visitor app
-        import BNI_Visitors_Records
-        BNI_Visitors_Records.main()
+        run_visitor_app()
     else:
         show_dashboard()
 
